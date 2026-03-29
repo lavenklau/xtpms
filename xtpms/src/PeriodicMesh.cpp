@@ -1096,12 +1096,23 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 
 	const Vec3d hp = halfPeriod_;
 
-	// [1] 计算每个顶点的奇异度（|H| from computeVertexGeometry）
+	// [1] 计算每个顶点的奇异度
 	const std::size_t nv = this->n_vertices();
 	auto geom = computeVertexGeometry(*this);
 	std::vector<double> singMeasure(nv, 0.0);
 	for (std::size_t i = 0; i < nv; ++i) {
-		singMeasure[i] = std::abs(geom.vrings[i].H);
+		double H = geom.vrings[i].H;
+		double K = geom.vrings[i].K;
+		if (opts.surgeryType == 1) {
+			// type 1: |H|
+			singMeasure[i] = std::abs(H);
+		} else {
+			// type 2: max(|κ₁|, |κ₂|)，其中 κ₁,κ₂ = H ± sqrt(H²-K)
+			double disc = H * H - K;
+			if (disc < 0) disc = 0;
+			double sqrtDisc = std::sqrt(disc);
+			singMeasure[i] = std::max(std::abs(H + sqrtDisc), std::abs(H - sqrtDisc));
+		}
 	}
 
 	// 输出奇异度统计
@@ -1279,13 +1290,21 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 				cmesh.add_face(omToSm[a], omToSm[b], omToSm[c]);
 			}
 
-			// CGAL 填洞
+			// CGAL 填洞：只填边数匹配原始边界环的洞（跳过 k-ring 外边界）
 			namespace PMP = CGAL::Polygon_mesh_processing;
 			std::vector<CGALMesh::Halfedge_index> borderCycles;
 			PMP::extract_boundary_cycles(cmesh, std::back_inserter(borderCycles));
 
+			int holeEdgeNum = static_cast<int>(loop.size());
+
 			for (auto h : borderCycles) {
-				// 只填小洞（边数匹配原始边界环）
+				// 数这个边界环的边数
+				int cycleLen = 0;
+				auto hh = h;
+				do { ++cycleLen; hh = cmesh.next(hh); } while (hh != h && cycleLen < 100000);
+				// 只填匹配原始洞大小的边界（跳过 k-ring 外边界）
+				if (cycleLen > holeEdgeNum * 2) continue;
+
 				std::vector<CGALMesh::Face_index> patchFaces;
 				std::vector<CGALMesh::Vertex_index> patchVerts;
 				try {

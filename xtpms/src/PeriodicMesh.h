@@ -113,7 +113,8 @@ public:
 	// 拓扑手术：检测颈部奇异（高曲率），删除周围面，填洞，去除孤岛。
 	// 返回 true 表示执行了手术。
 	struct SurgeryOptions {
-		double singularityTol{25.0};   // 奇异度阈值（均曲率绝对值）
+		double singularityTol{25.0};   // 奇异度阈值
+		int surgeryType{2};            // 1: |H|, 2: max(|κ₁|,|κ₂|)（推荐，检测颈部更好）
 		double islandCullRatio{0.1};   // 面数 < 最大连通分量 * ratio 的孤岛被删除
 	};
 	bool surgery(const SurgeryOptions& opts = {});

@@ -480,7 +480,8 @@ SensitivityResult computeSensitivity(
 		// 第二基本形式
 		Eigen::Vector3d be = secondFundamentalFormEdge(tri, vring[0], vring[1], vring[2]);
 		Eigen::Matrix3d Bn = strainMatrixEdgeStretch(tri, fr.col(0), fr.col(1));
-		Eigen::Matrix2d bform = fromVoigt3(Bn * be); // 2x2 第二基本形式
+		Eigen::Vector3d bformVoigt = Bn * be;
+		Eigen::Matrix2d bform = fromVoigt3(bformVoigt); // 2x2 第二基本形式
 
 		// 标量梯度矩阵 2x3
 		Eigen::Matrix<double, 2, 3> G = scalarGradientMatrix(tri, fr);
@@ -517,14 +518,8 @@ SensitivityResult computeSensitivity(
 		}
 	}
 
-	// 除以顶点面积
-	for (int i = 0; i < nv; ++i) {
-		double ai = geom.vertexAreas[i];
-		if (ai > 1e-15) {
-			result.vSens.row(i) /= ai;
-			result.aSens[i] /= ai;
-		}
-	}
+	// 注意：不在这里除以顶点面积，由 tailorADC 中统一处理
+	// （与 minsurf 一致：asym_cond_sensitivity 返回累加值）
 
 	return result;
 }
@@ -681,8 +676,16 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		// [7] sensitivity
 		auto sens = computeSensitivity(mesh, geom, ulist);
 
-		// [8] gradient（最大化 → dfdvn 用 -obj.gradient, dn = -G^{-1}*... 给出上升方向）
+		// [8] gradient（与 minsurf 一致：先除 vertex area，再除 As）
 		double As = geom.vertexAreas.sum();
+		// 除以顶点面积（从面积密度到每顶点值）
+		for (int i = 0; i < nv; ++i) {
+			double ai = geom.vertexAreas[i];
+			if (ai > 1e-15) {
+				sens.vSens.row(i) /= ai;
+				sens.aSens[i] /= ai;
+			}
+		}
 		auto kAv = toVoigt(kA);
 		kAv.tail<3>() /= 2.0;
 		Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-obj.gradient);

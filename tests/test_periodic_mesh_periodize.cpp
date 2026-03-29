@@ -743,6 +743,138 @@ TEST(PipelineDiag, RemeshNonManifoldCheck) {
 	EXPECT_EQ(countBoundaryEdges(mesh), 0);
 }
 
+TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
+	// 对 Gyroid 做有限差分验证 sensitivity
+	const Vec3d hp(1.0, 1.0, 1.0);
+	auto mesh = makeClosedSchwarzP(hp, 20);
+	ASSERT_EQ(countBoundaryEdges(mesh), 0);
+
+	auto geom = xtpms::computeVertexGeometry(mesh);
+	Eigen::MatrixX3d ulist;
+	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
+	double obj0 = kA.trace() / 3.0; // apac
+
+	// 解析导数
+	auto sens = xtpms::computeSensitivity(mesh, geom, ulist);
+	double As = geom.vertexAreas.sum();
+	auto kAv = xtpms::toVoigt(kA);
+	kAv.tail<3>() /= 2.0;
+	// 除以顶点面积（与 tailorADC 一致）
+	for (int i = 0; i < static_cast<int>(mesh.n_vertices()); ++i) {
+		double ai = geom.vertexAreas[i];
+		if (ai > 1e-15) {
+			sens.vSens.row(i) /= ai;
+			sens.aSens[i] /= ai;
+		}
+	}
+	auto objRes = xtpms::evaluateADCObjective("apac", kA);
+	Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-objRes.gradient);
+
+	// 随机方向的方向导数
+	Eigen::VectorXd d(mesh.n_vertices());
+	d.setRandom();
+	d.normalize();
+	double analyticDeriv = d.dot(dfdvn);
+
+	// 数值导数：沿 d 方向做法向位移
+	// 中心差分：f(x+h) - f(x-h) / (2h)
+	double step = 1e-6;
+	auto perturbMesh = [&](double s) {
+		xtpms::PeriodicTriMesh copy = mesh;
+		for (auto v_it = copy.vertices_begin(); v_it != copy.vertices_end(); ++v_it) {
+			int vi = (*v_it).idx();
+			Eigen::Vector3d p(
+				static_cast<double>(copy.point(*v_it)[0]),
+				static_cast<double>(copy.point(*v_it)[1]),
+				static_cast<double>(copy.point(*v_it)[2]));
+			Eigen::Vector3d n = geom.vertexNormals[static_cast<std::size_t>(vi)];
+			p += s * d[vi] * n;
+			copy.set_point(*v_it, Vec3d(
+				static_cast<xtpms::DefaultTriMesh::Scalar>(p[0]),
+				static_cast<xtpms::DefaultTriMesh::Scalar>(p[1]),
+				static_cast<xtpms::DefaultTriMesh::Scalar>(p[2])));
+		}
+		auto g = xtpms::computeVertexGeometry(copy);
+		Eigen::MatrixX3d u;
+		Eigen::Matrix3d k = xtpms::solveAsymptoticConductivity(copy, g, u);
+		return k.trace() / 3.0;
+	};
+	double objPlus = perturbMesh(step);
+	double objMinus = perturbMesh(-step);
+	double numericDeriv = (objPlus - objMinus) / (2.0 * step);
+
+	std::cout << "=== Sensitivity FD Check (full objective) ===\n";
+	std::cout << "obj0 = " << obj0 << ", obj+=" << objPlus << ", obj-=" << objMinus << "\n";
+	std::cout << "analytic directional deriv = " << analyticDeriv << "\n";
+	std::cout << "numeric  directional deriv = " << numericDeriv << "\n";
+	std::cout << "ratio = " << (std::abs(numericDeriv) > 1e-15 ? analyticDeriv / numericDeriv : 0) << "\n";
+
+	// 检查法向一致性
+	{
+		int vi = 10;
+		auto vh = xtpms::PeriodicTriMesh::VertexHandle(vi);
+		Eigen::Vector3d crNv = geom.vrings[static_cast<std::size_t>(vi)].nv;
+		// 面法向平均
+		Eigen::Vector3d faceNvAvg = Eigen::Vector3d::Zero();
+		int fc = 0;
+		for (auto vf = mesh.cvf_iter(vh); vf.is_valid(); ++vf) {
+			Eigen::Matrix3d tri = xtpms::faceFrame(xtpms::faceFrame(
+				// ... 太复杂了，直接用叉积
+				Eigen::Matrix3d()));
+			// 简单用叉积
+			auto fvi = mesh.cfv_iter(*vf);
+			auto p0 = mesh.point(*fvi); ++fvi; auto p1 = mesh.point(*fvi); ++fvi; auto p2 = mesh.point(*fvi);
+			Vec3d e1 = mesh.wrapVector(p1 - p0);
+			Vec3d e2 = mesh.wrapVector(p2 - p0);
+			Vec3d fn = e1 % e2;
+			double fnl = fn.norm();
+			if (fnl > 1e-15) {
+				faceNvAvg += Eigen::Vector3d(static_cast<double>(fn[0])/fnl, static_cast<double>(fn[1])/fnl, static_cast<double>(fn[2])/fnl);
+				++fc;
+			}
+		}
+		if (fc > 0) faceNvAvg /= fc;
+		faceNvAvg.normalize();
+		std::cout << "v" << vi << " Compile1ring nv=(" << crNv.transpose()
+				  << ") face avg nv=(" << faceNvAvg.transpose()
+				  << ") dot=" << crNv.dot(faceNvAvg) << "\n";
+	}
+
+	// 单顶点中心差分
+	int testV = 10;
+	{
+		auto singlePerturb = [&](double s) {
+			xtpms::PeriodicTriMesh copy = mesh;
+			Eigen::Vector3d p0(
+				static_cast<double>(copy.point(xtpms::PeriodicTriMesh::VertexHandle(testV))[0]),
+				static_cast<double>(copy.point(xtpms::PeriodicTriMesh::VertexHandle(testV))[1]),
+				static_cast<double>(copy.point(xtpms::PeriodicTriMesh::VertexHandle(testV))[2]));
+			Eigen::Vector3d n0 = geom.vertexNormals[static_cast<std::size_t>(testV)];
+			Eigen::Vector3d p1 = p0 + s * n0;
+			copy.set_point(xtpms::PeriodicTriMesh::VertexHandle(testV), Vec3d(
+				static_cast<xtpms::DefaultTriMesh::Scalar>(p1[0]),
+				static_cast<xtpms::DefaultTriMesh::Scalar>(p1[1]),
+				static_cast<xtpms::DefaultTriMesh::Scalar>(p1[2])));
+			auto g = xtpms::computeVertexGeometry(copy);
+			Eigen::MatrixX3d u;
+			Eigen::Matrix3d k = xtpms::solveAsymptoticConductivity(copy, g, u);
+			return k.trace() / 3.0;
+		};
+		double numSingle = (singlePerturb(step) - singlePerturb(-step)) / (2.0 * step);
+		double anaSingle = dfdvn[testV];
+		std::cout << "=== Single vertex FD (v" << testV << ") ===\n";
+		std::cout << "  numeric  = " << numSingle << "\n";
+		std::cout << "  analytic = " << anaSingle << "\n";
+		std::cout << "  ratio = " << (std::abs(numSingle) > 1e-15 ? anaSingle / numSingle : 0) << "\n";
+	}
+
+	// 两者应该符号相同且量级接近
+	if (std::abs(numericDeriv) > 1e-10) {
+		double ratio = analyticDeriv / numericDeriv;
+		EXPECT_NEAR(ratio, 1.0, 0.5) << "Analytic and numeric derivatives should be close";
+	}
+}
+
 TEST(Surgery, DiagnoseRingOrder) {
 	// 检查 cvoh_iter 的遍历顺序是否与面环形一致
 	const Vec3d hp(0.5, 0.5, 0.5);
@@ -1232,18 +1364,18 @@ TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
 }
 
 TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
-	// 从文件读取 rod3.obj，周期 [0,10]^3
+	// 从文件读取 rod3-2.obj，周期 [0,2]^3
 	namespace fs = std::filesystem;
-	const fs::path meshPath(R"(tests/data/rod3.obj)");
+	const fs::path meshPath(R"(tests/data/rod3-2.obj)");
 	if (!fs::exists(meshPath)) {
-		GTEST_SKIP() << "rod3.obj not found: " << meshPath.string();
+		GTEST_SKIP() << "rod3-2.obj not found: " << meshPath.string();
 	}
 
 	xtpms::DefaultTriMesh src;
 	ASSERT_TRUE(OpenMesh::IO::read_mesh(src, meshPath.string()));
 	ASSERT_GT(src.n_vertices(), 0u);
 
-	const Vec3d hp(5.0, 5.0, 5.0);  // 半周期 = 5，全周期 = 10
+	const Vec3d hp(1.0, 1.0, 1.0);  // 半周期 = 1，全周期 = 2
 	// 先输出原始网格（merge 前）
 	OpenMesh::IO::write_mesh(src, "rod3_raw.obj");
 
@@ -1280,8 +1412,9 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 	opts.remeshOpts.outerIter = 1;
 	opts.remeshOpts.innerIter = 3;
 
-	opts.enableSurgery = false; // surgery 的 fill_holes 还需要改进
-	opts.mcfWeight = 0.1;
+	opts.enableSurgery = true;
+	opts.surgeryInterval = 4;
+	opts.surgeryOpts.singularityTol = 10.0;
 
 	opts.outputDir = ".";
 	opts.saveInterval = 1;

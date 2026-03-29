@@ -1,0 +1,42 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "vs2019-vcpkg",
+      "displayName": "Visual Studio 2019 + vcpkg (Release only, x64)",
+      "generator": "Visual Studio 16 2019",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_MODE": "OFF",
+        "CMAKE_CONFIGURATION_TYPES": "Release"
+      }
+    },
+    {
+      "name": "vcpkg-ninja-release",
+      "displayName": "Ninja + vcpkg (single-config Release)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-ninja",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_MODE": "OFF",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "displayName": "Build Release (VS2019 preset)",
+      "configurePreset": "vs2019-vcpkg",
+      "configuration": "Release"
+    },
+    {
+      "name": "ninja-release",
+      "displayName": "Build (Ninja Release)",
+      "configurePreset": "vcpkg-ninja-release"
+    }
+  ]
+}

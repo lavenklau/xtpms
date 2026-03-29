@@ -1,0 +1,10 @@
+{
+  "name": "xtpms",
+  "version": "0.1.0",
+  "description": "Periodic TPMS / microstructure geometry (CMake + vcpkg)",
+  "dependencies": [
+    "cgal",
+    "openmesh",
+    "gtest"
+  ]
+}

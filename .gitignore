@@ -16,6 +16,12 @@
 # Mono auto generated files
 mono_crash.*
 
+# CMake / Ninja out-of-source
+[Bb]uild/
+
+# Local mesh outputs (e.g. test_marching_cubes gyroid OBJ)
+results/
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/

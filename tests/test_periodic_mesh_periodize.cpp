@@ -743,8 +743,92 @@ TEST(PipelineDiag, RemeshNonManifoldCheck) {
 	EXPECT_EQ(countBoundaryEdges(mesh), 0);
 }
 
+TEST(Surgery, DiagnoseRingOrder) {
+	// 检查 cvoh_iter 的遍历顺序是否与面环形一致
+	const Vec3d hp(0.5, 0.5, 0.5);
+	auto mesh = makeClosedGyroid(hp, 16);
+	ASSERT_EQ(countBoundaryEdges(mesh), 0);
+
+	// 取前几个内部顶点，比较 cvoh_iter 顺序和面遍历顺序
+	int checked = 0;
+	for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end() && checked < 5; ++v_it) {
+		if (mesh.is_boundary(*v_it)) continue;
+		auto vh = *v_it;
+
+		// 方法1: cvoh_iter（当前用法）
+		std::vector<int> ring_voh;
+		for (auto voh = mesh.cvoh_iter(vh); voh.is_valid(); ++voh)
+			ring_voh.push_back(mesh.to_vertex_handle(*voh).idx());
+
+		// 方法2: 通过面遍历（保证 CCW）
+		std::vector<int> ring_face;
+		auto he_start = mesh.halfedge_handle(vh); // 一条 outgoing halfedge
+		auto he = he_start;
+		do {
+			ring_face.push_back(mesh.to_vertex_handle(he).idx());
+			// 转到下一条 outgoing: prev(opp(he))? 或 opp(next(he))?
+			he = mesh.opposite_halfedge_handle(mesh.prev_halfedge_handle(he));
+		} while (he != he_start && ring_face.size() < 20);
+
+		bool same = (ring_voh == ring_face);
+		std::cout << "v" << vh.idx() << " valence=" << mesh.valence(vh)
+				  << " voh=[";
+		for (int v : ring_voh) std::cout << v << ",";
+		std::cout << "] face=[";
+		for (int v : ring_face) std::cout << v << ",";
+		std::cout << "] same=" << same << "\n";
+
+		// 计算两种顺序的 Compile1ring H 值
+		auto buildRing = [&](const std::vector<int>& order) {
+			Eigen::Vector3d center = Eigen::Vector3d(
+				static_cast<double>(mesh.point(vh)[0]),
+				static_cast<double>(mesh.point(vh)[1]),
+				static_cast<double>(mesh.point(vh)[2]));
+			std::vector<Eigen::Vector3d> ring;
+			for (int vi : order) {
+				auto diff = mesh.point(xtpms::PeriodicTriMesh::VertexHandle(vi)) - mesh.point(vh);
+				auto wrapped = mesh.wrapVector(diff);
+				ring.push_back(center + Eigen::Vector3d(
+					static_cast<double>(wrapped[0]),
+					static_cast<double>(wrapped[1]),
+					static_cast<double>(wrapped[2])));
+			}
+			return xtpms::Compile1ring(center, ring);
+		};
+
+		auto cr_voh = buildRing(ring_voh);
+		auto cr_face = buildRing(ring_face);
+		std::cout << "  H_voh=" << cr_voh.H << " H_face=" << cr_face.H
+				  << " As_voh=" << cr_voh.As << " As_face=" << cr_face.As
+				  << " Lx_voh=" << cr_voh.Lx.norm() << " Lx_face=" << cr_face.Lx.norm() << "\n";
+		// 输出 ring 的实际坐标（看 wrap 是否正确）
+		if (checked == 0) {
+			auto center = Eigen::Vector3d(
+				static_cast<double>(mesh.point(vh)[0]),
+				static_cast<double>(mesh.point(vh)[1]),
+				static_cast<double>(mesh.point(vh)[2]));
+			std::cout << "  center=(" << center.transpose() << ")\n";
+			for (size_t ri = 0; ri < ring_voh.size(); ++ri) {
+				auto diff = mesh.point(xtpms::PeriodicTriMesh::VertexHandle(ring_voh[ri])) - mesh.point(vh);
+				auto wrapped = mesh.wrapVector(diff);
+				Eigen::Vector3d p = center + Eigen::Vector3d(
+					static_cast<double>(wrapped[0]),
+					static_cast<double>(wrapped[1]),
+					static_cast<double>(wrapped[2]));
+				auto raw = mesh.point(xtpms::PeriodicTriMesh::VertexHandle(ring_voh[ri]));
+				std::cout << "  ring[" << ri << "] v" << ring_voh[ri]
+						  << " raw=(" << raw[0] << "," << raw[1] << "," << raw[2]
+						  << ") wrapped=(" << p.transpose() << ")"
+						  << " dist=" << (p - center).norm() << "\n";
+			}
+		}
+
+		++checked;
+	}
+}
+
 TEST(Surgery, GyroidSurgerySmoke) {
-	// 不同分辨率下的 Gyroid 均曲率统计
+	// MC 生成的 Gyroid 离散曲率统计（MC 网格不精确，离散 H 可能很大）
 	const Vec3d hp(0.5, 0.5, 0.5);
 	for (int res : {16, 24, 32}) {
 		auto m = makeClosedGyroid(hp, res);
@@ -755,34 +839,51 @@ TEST(Surgery, GyroidSurgerySmoke) {
 		std::cout << "res=" << res << " nv=" << m.n_vertices() << " maxH=" << maxH << " avgH=" << avgH << "\n";
 	}
 
-	// 用 res=24 做 surgery 测试
-	auto mesh = makeClosedGyroid(hp, 24);
+	// 对 remesh 后的 Gyroid 做 surgery 测试（remesh 后网格质量更好，H 更合理）
+	auto mesh = makeClosedGyroid(hp, 16);
+	xtpms::RemeshOptions ropts;
+	ropts.outerIter = 1;
+	ropts.innerIter = 3;
+	xtpms::delaunayRemesh(mesh, ropts);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
 	int nvBefore = static_cast<int>(mesh.n_vertices());
 
+	auto geom = xtpms::computeVertexGeometry(mesh);
+	double maxH = 0;
+	for (auto& vr : geom.vrings) maxH = std::max(maxH, std::abs(vr.H));
+	std::cout << "after remesh: nv=" << mesh.n_vertices() << " maxH=" << maxH << "\n";
+
 	xtpms::PeriodicTriMesh::SurgeryOptions opts;
-	opts.singularityTol = 25.0; // 固定阈值
+	opts.singularityTol = 25.0;
 	bool performed = mesh.surgery(opts);
 
 	std::cout << "surgery performed=" << performed << "\n";
-	// 正常 Gyroid 在 res=24 下不应有奇异度超过 25 的顶点
-	EXPECT_FALSE(performed) << "Normal Gyroid should not need surgery";
+	EXPECT_FALSE(performed) << "Remeshed Gyroid should not need surgery (maxH=" << maxH << ")";
 	EXPECT_EQ(static_cast<int>(mesh.n_vertices()), nvBefore);
 	EXPECT_EQ(countBoundaryEdges(mesh), 0);
 }
 
 TEST(Surgery, GyroidLowThreshold_SurgeryAndFill) {
-	// 用低阈值强制触发 surgery，测试 CGAL 填洞 + bilaplacian 光滑
+	// remesh 后用低阈值触发 surgery，测试 CGAL 填洞 + bilaplacian 光滑
 	const Vec3d hp(0.5, 0.5, 0.5);
-	auto mesh = makeClosedGyroid(hp, 24);
+	auto mesh = makeClosedGyroid(hp, 16);
+	xtpms::RemeshOptions ropts;
+	ropts.outerIter = 1;
+	ropts.innerIter = 3;
+	xtpms::delaunayRemesh(mesh, ropts);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
 	int nfBefore = static_cast<int>(mesh.n_faces());
 
+	auto geom = xtpms::computeVertexGeometry(mesh);
+	double maxH = 0;
+	for (auto& vr : geom.vrings) maxH = std::max(maxH, std::abs(vr.H));
+	std::cout << "before surgery: maxH=" << maxH << " nf=" << nfBefore << "\n";
+
 	mesh.saveUnitCell("surgery_before.obj");
 
-	// 用比 maxH 略低的阈值，只删少量最高曲率顶点
+	// 用 maxH 的 80% 作为阈值，只删少量最高曲率顶点
 	xtpms::PeriodicTriMesh::SurgeryOptions opts;
-	opts.singularityTol = 10.0; // 固定阈值
+	opts.singularityTol = maxH * 0.8;
 	bool performed = mesh.surgery(opts);
 
 	mesh.saveUnitCell("surgery_after.obj");
@@ -791,9 +892,8 @@ TEST(Surgery, GyroidLowThreshold_SurgeryAndFill) {
 			  << " nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
 			  << " bnd=" << countBoundaryEdges(mesh) << "\n";
 
-	// 删除+填洞后应保留大部分面
 	EXPECT_GT(static_cast<int>(mesh.n_faces()), nfBefore / 2)
-		<< "Surgery should not destroy most of the mesh";
+		<< "Surgery should preserve most faces";
 }
 
 // ──────────────────────────────────────────────────────────

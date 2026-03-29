@@ -79,17 +79,29 @@ void getFaceVertexIdx(const PeriodicTriMesh& mesh, FH fh, int idx[3]) {
 	idx[2] = (*fv).idx();
 }
 
-// 获取顶点的周期 1-ring 邻域
+// 获取顶点的周期 1-ring 邻域（通过面遍历保证 CCW 顺序）
 void getPeriodicRing(const PeriodicTriMesh& mesh, VH vh,
 					 Eigen::Vector3d& outCenter, std::vector<Eigen::Vector3d>& outRing) {
 	const Vec3d hp = mesh.halfPeriod();
 	outCenter = toEig(mesh.point(vh));
 	outRing.clear();
-	for (auto voh_it = mesh.cvoh_iter(vh); voh_it.is_valid(); ++voh_it) {
-		VH vn = mesh.to_vertex_handle(*voh_it);
-		Eigen::Vector3d pn = outCenter + toEig(makePeriod(mesh.point(vn) - mesh.point(vh), hp));
-		outRing.push_back(pn);
+
+	if (mesh.is_boundary(vh)) {
+		for (auto voh_it = mesh.cvoh_iter(vh); voh_it.is_valid(); ++voh_it) {
+			VH vn = mesh.to_vertex_handle(*voh_it);
+			outRing.push_back(outCenter + toEig(makePeriod(mesh.point(vn) - mesh.point(vh), hp)));
+		}
+		return;
 	}
+
+	// 面遍历保证 CCW 顺序
+	HH he_start = mesh.halfedge_handle(vh);
+	HH he = he_start;
+	do {
+		VH vn = mesh.to_vertex_handle(he);
+		outRing.push_back(outCenter + toEig(makePeriod(mesh.point(vn) - mesh.point(vh), hp)));
+		he = mesh.opposite_halfedge_handle(mesh.prev_halfedge_handle(he));
+	} while (he != he_start && outRing.size() < 30);
 }
 
 } // namespace

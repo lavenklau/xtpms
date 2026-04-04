@@ -652,6 +652,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		if (opts.enableSurgery && iter >= opts.surgeryStartIter && iter % opts.surgeryInterval == 0 && iter > 0) {
 			if (mesh.surgery(opts.surgeryOpts)) {
 				mesh.garbage_collection();
+				mesh.removeNonPeriodicIslands();
 				std::cout << "surgery performed at iter " << iter
 						  << " nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 				if (!opts.outputDir.empty()) {
@@ -675,9 +676,6 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it)
 					if (mesh.valence(*v_it) == 0) { mesh.delete_vertex(*v_it, false); cleaned = true; }
 				if (cleaned) mesh.garbage_collection();
-			}
-			if (!opts.outputDir.empty()) {
-				mesh.saveUnitCell(opts.outputDir + "/aftrem_" + std::to_string(iter) + ".obj");
 			}
 		}
 

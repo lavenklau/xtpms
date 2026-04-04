@@ -107,6 +107,13 @@ public:
 	// 将顶点 wrap 到基本域 [0, 2*halfPeriod) 内。
 	void periodShift();
 
+	// 检测并删除不贯穿周期的孤岛连通分量
+	// 从每个连通分量的种子顶点出发，沿 3 个轴做 BFS 累加周期包装后的坐标差
+	// 如果某轴方向累积距离 >= 一个完整周期，说明该分量贯穿了该轴
+	// 只要贯穿任意一个轴就保留，否则删除
+	// 返回删除的面数
+	int removeNonPeriodicIslands();
+
 	// 在周期边界处截断跨周期边（和 minsurf split_unit_cell 对齐）
 	// 截断后网格不再是周期闭合的（有边界边在周期面上）
 	void splitUnitCell();

@@ -2470,7 +2470,8 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 		if (hasBnd) mesh.mergePeriodBoundary();
 
 		std::cout << "  pre " << pre << ": nv=" << mesh.n_vertices()
-				  << " nf=" << mesh.n_faces() << " maxLx=" << maxLx << "\n";
+				  << " nf=" << mesh.n_faces() << " maxLx=" << maxLx
+				  << " bnd=" << countBoundaryEdges(mesh) << "\n";
 	}
 	mesh.saveUnitCell("rod3_pre_smoothed.obj");
 
@@ -2489,7 +2490,7 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 	// 优化（和 NonUniformPeriod 相同参数）
 	xtpms::TailorADCOptions opts;
 	opts.objectiveType = "apac";
-	opts.maxIter = 41;  // surgery 在 iter=40 执行，41 步看结果
+	opts.maxIter = 100;
 	opts.maxStep = 1.0;
 	opts.convergeTol = 1e-5;
 	opts.stepTol = 1e-4;
@@ -2506,7 +2507,7 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 	opts.surgeryOpts.singularityTol = 50.0;
 
 	opts.outputDir = ".";
-	opts.saveInterval = 10;
+	opts.saveInterval = 1;
 
 	xtpms::tailorADC(mesh, opts);
 

@@ -948,6 +948,103 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// removeNonPeriodicIslands
+// 检测并删除不贯穿周期的连通分量（和 minsurf deleteisoisland 的 BFS 方法对齐）
+// ──────────────────────────────────────────────────────────────────────────
+
+int PeriodicTriMesh::removeNonPeriodicIslands() {
+	this->request_vertex_status();
+	this->request_edge_status();
+	this->request_halfedge_status();
+	this->request_face_status();
+
+	const Vec3d hp = halfPeriod_;
+	const double fullPeriod[3] = {
+		2.0 * static_cast<double>(hp[0]),
+		2.0 * static_cast<double>(hp[1]),
+		2.0 * static_cast<double>(hp[2])
+	};
+
+	// 找连通分量
+	const std::size_t nvTotal = this->n_vertices();
+	std::vector<int> compId(nvTotal, -1);
+	std::vector<VertexHandle> compSeed;
+	int nComp = 0;
+	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
+		if (compId[static_cast<std::size_t>((*v_it).idx())] >= 0) continue;
+		std::queue<int> q;
+		q.push((*v_it).idx());
+		compId[static_cast<std::size_t>((*v_it).idx())] = nComp;
+		while (!q.empty()) {
+			int vi = q.front(); q.pop();
+			for (auto voh = this->cvoh_iter(VertexHandle(vi)); voh.is_valid(); ++voh) {
+				int nb = this->to_vertex_handle(*voh).idx();
+				if (compId[static_cast<std::size_t>(nb)] < 0) {
+					compId[static_cast<std::size_t>(nb)] = nComp;
+					q.push(nb);
+				}
+			}
+		}
+		compSeed.push_back(*v_it);
+		++nComp;
+	}
+
+	if (nComp <= 1) return 0;
+
+	// 对每个连通分量，检测是否贯穿至少一个轴的周期
+	std::vector<bool> shouldRemove(static_cast<std::size_t>(nComp), true);
+	for (int ci = 0; ci < nComp; ++ci) {
+		VertexHandle seed = compSeed[static_cast<std::size_t>(ci)];
+		for (int axis = 0; axis < 3; ++axis) {
+			// BFS：沿 axis 方向累加周期包装后的坐标差
+			std::vector<double> vdist(nvTotal, 0.0);
+			std::queue<std::pair<int, double>> bfs;
+			bfs.push({seed.idx(), 0.0});
+			double maxDist = -1;
+			while (!bfs.empty() && maxDist < fullPeriod[axis]) {
+				auto [vi, dist] = bfs.front();
+				bfs.pop();
+				if (dist - vdist[static_cast<std::size_t>(vi)] < -1e-6) continue;
+				vdist[static_cast<std::size_t>(vi)] = dist;
+				maxDist = std::max(maxDist, dist);
+				for (auto voh = this->cvoh_iter(VertexHandle(vi)); voh.is_valid(); ++voh) {
+					int nb = this->to_vertex_handle(*voh).idx();
+					Vec3d ev = wrapVector(this->point(VertexHandle(nb)) - this->point(VertexHandle(vi)));
+					double nbDist = dist + static_cast<double>(ev[axis]);
+					if (nbDist > vdist[static_cast<std::size_t>(nb)]) {
+						bfs.push({nb, nbDist});
+						vdist[static_cast<std::size_t>(nb)] = nbDist;
+						maxDist = std::max(maxDist, nbDist);
+					}
+				}
+			}
+			if (maxDist >= fullPeriod[axis]) {
+				shouldRemove[static_cast<std::size_t>(ci)] = false;
+				break;
+			}
+		}
+	}
+
+	// 删除不贯穿的分量
+	int deletedFaces = 0;
+	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
+		int ci = compId[static_cast<std::size_t>((*v_it).idx())];
+		if (ci >= 0 && shouldRemove[static_cast<std::size_t>(ci)]) {
+			for (auto vf = this->cvf_iter(*v_it); vf.is_valid(); ++vf)
+				if (!this->status(*vf).deleted()) { this->delete_face(*vf, false); ++deletedFaces; }
+		}
+	}
+
+	if (deletedFaces > 0) {
+		this->garbage_collection();
+		std::cerr << "[removeNonPeriodicIslands] removed " << deletedFaces << " faces from "
+				  << std::count(shouldRemove.begin(), shouldRemove.end(), true) << " non-periodic components\n";
+	}
+
+	return deletedFaces;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // periodShift
 // ──────────────────────────────────────────────────────────────────────────
 

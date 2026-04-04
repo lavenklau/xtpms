@@ -367,3 +367,14 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# Claude Code
+.claude/
+
+# Cursor IDE
+.cursor/
+
+# vcpkg installed packages
+vcpkg_installed/
+
+# CTest
+Testing/

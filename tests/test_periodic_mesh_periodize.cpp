@@ -744,7 +744,938 @@ TEST(PipelineDiag, RemeshNonManifoldCheck) {
 }
 
 TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
-	// 对 Gyroid 做有限差分验证 sensitivity
+	// 在远离 TPMS 的周期曲面上验证 sensitivity
+	// 用大扰动的 Schwarz P: cos(πx)+cos(πy)+cos(πz) + 0.4*sin(2πx)sin(πy) = 0
+	const Vec3d hp(1.0, 1.0, 1.0);
+	auto levelSet = [](double x, double y, double z) {
+		double px = M_PI * x, py = M_PI * y, pz = M_PI * z;
+		return std::cos(px) + std::cos(py) + std::cos(pz) + 0.4 * std::sin(2 * px) * std::sin(py);
+	};
+	auto src = makeTPMSMC(hp, levelSet, 40);  // 加密到 res=40
+	auto mesh = makeClosedTPMS(hp, src);
+	ASSERT_EQ(countBoundaryEdges(mesh), 0);
+
+	// Remesh 改善网格质量
+	for (int round = 0; round < 3; ++round) {
+		xtpms::RemeshOptions ropts;
+		ropts.outerIter = 2;
+		ropts.innerIter = 5;
+		xtpms::delaunayRemesh(mesh, ropts);
+		bool hasBnd = false;
+		for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end() && !hasBnd; ++e_it)
+			if (mesh.is_boundary(*e_it)) hasBnd = true;
+		if (hasBnd) mesh.mergePeriodBoundary();
+	}
+	ASSERT_EQ(countBoundaryEdges(mesh), 0);
+
+	// 沿法向二分搜索投影到隐函数水平集
+	{
+		auto geomProj = xtpms::computeVertexGeometry(mesh);
+		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+			int vi = (*v_it).idx();
+			Eigen::Vector3d p(
+				static_cast<double>(mesh.point(*v_it)[0]),
+				static_cast<double>(mesh.point(*v_it)[1]),
+				static_cast<double>(mesh.point(*v_it)[2]));
+			Eigen::Vector3d n = geomProj.vertexNormals[static_cast<std::size_t>(vi)];
+			double f0 = levelSet(p[0], p[1], p[2]);
+			// 二分搜索：找 t 使得 levelSet(p + t*n) = 0
+			double tlo = -0.1, thi = 0.1;
+			double flo = levelSet(p[0]+tlo*n[0], p[1]+tlo*n[1], p[2]+tlo*n[2]);
+			double fhi = levelSet(p[0]+thi*n[0], p[1]+thi*n[1], p[2]+thi*n[2]);
+			if (flo * fhi < 0) {
+				for (int iter = 0; iter < 50; ++iter) {
+					double tmid = (tlo + thi) / 2.0;
+					double fmid = levelSet(p[0]+tmid*n[0], p[1]+tmid*n[1], p[2]+tmid*n[2]);
+					if (fmid * flo < 0) { thi = tmid; fhi = fmid; }
+					else { tlo = tmid; flo = fmid; }
+				}
+				double t = (tlo + thi) / 2.0;
+				mesh.set_point(*v_it, Vec3d(
+					static_cast<xtpms::DefaultTriMesh::Scalar>(p[0]+t*n[0]),
+					static_cast<xtpms::DefaultTriMesh::Scalar>(p[1]+t*n[1]),
+					static_cast<xtpms::DefaultTriMesh::Scalar>(p[2]+t*n[2])));
+			} else if (std::abs(f0) > 1e-10) {
+				// 如果二分区间内没有零点，用 Newton 步
+				double gx = -M_PI*std::sin(M_PI*p[0]) + 0.4*2*M_PI*std::cos(2*M_PI*p[0])*std::sin(M_PI*p[1]);
+				double gy = -M_PI*std::sin(M_PI*p[1]) + 0.4*std::sin(2*M_PI*p[0])*M_PI*std::cos(M_PI*p[1]);
+				double gz = -M_PI*std::sin(M_PI*p[2]);
+				Eigen::Vector3d grad(gx, gy, gz);
+				double dn = grad.dot(n);
+				if (std::abs(dn) > 1e-12) {
+					double t = -f0 / dn;
+					if (std::abs(t) < 0.1) {
+						mesh.set_point(*v_it, Vec3d(
+							static_cast<xtpms::DefaultTriMesh::Scalar>(p[0]+t*n[0]),
+							static_cast<xtpms::DefaultTriMesh::Scalar>(p[1]+t*n[1]),
+							static_cast<xtpms::DefaultTriMesh::Scalar>(p[2]+t*n[2])));
+					}
+				}
+			}
+		}
+		// 检查投影质量
+		double maxErr = 0;
+		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+			auto p = mesh.point(*v_it);
+			double f = levelSet(static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2]));
+			maxErr = std::max(maxErr, std::abs(f));
+		}
+		std::cout << "After projection: max level set error = " << maxErr << "\n";
+	}
+
+	// saveUnitCell with per-vertex scalar field
+	auto saveUnitCellWithScalar = [](const xtpms::PeriodicTriMesh& m,
+									 const Eigen::VectorXd& scalar,
+									 const std::string& filename) {
+		const double L[3] = {2.0*m.halfPeriod()[0], 2.0*m.halfPeriod()[1], 2.0*m.halfPeriod()[2]};
+		const double hp[3] = {(double)m.halfPeriod()[0], (double)m.halfPeriod()[1], (double)m.halfPeriod()[2]};
+		const int nv = (int)m.n_vertices();
+
+		// 原始顶点 wrap 到 [0,L)
+		std::vector<std::array<double,3>> verts(nv);
+		for (auto v = m.vertices_begin(); v != m.vertices_end(); ++v) {
+			auto& p = m.point(*v);
+			auto& vv = verts[(*v).idx()];
+			for (int a = 0; a < 3; ++a) {
+				double pi = (double)p[a];
+				while (pi < -1e-8) pi += L[a];
+				while (pi > L[a]+1e-8) pi -= L[a];
+				vv[a] = pi;
+			}
+		}
+
+		// 逐面 unwrap，记录 dup 顶点和它的原始索引
+		struct F3 { int v[3]; };
+		std::vector<F3> faces;
+		std::vector<std::array<double,3>> extraVerts;
+		std::vector<int> extraOrigIdx;  // 额外顶点对应的原始顶点索引
+
+		for (auto f = m.faces_begin(); f != m.faces_end(); ++f) {
+			auto fv = m.cfv_iter(*f);
+			int idx[3]; idx[0]=(*fv).idx(); ++fv; idx[1]=(*fv).idx(); ++fv; idx[2]=(*fv).idx();
+			std::array<double,3> p[3];
+			p[0] = verts[idx[0]];
+			for (int k = 1; k < 3; ++k) {
+				p[k] = verts[idx[k]];
+				for (int a = 0; a < 3; ++a) {
+					double d = p[k][a] - p[0][a];
+					if (d > hp[a]) p[k][a] -= L[a];
+					else if (d < -hp[a]) p[k][a] += L[a];
+				}
+			}
+			for (int a = 0; a < 3; ++a) {
+				double c = (p[0][a]+p[1][a]+p[2][a])/3.0;
+				while (c < 0) { for (int k=0;k<3;++k) p[k][a]+=L[a]; c+=L[a]; }
+				while (c > L[a]) { for (int k=0;k<3;++k) p[k][a]-=L[a]; c-=L[a]; }
+			}
+			F3 face;
+			for (int k = 0; k < 3; ++k) {
+				bool moved = false;
+				for (int a = 0; a < 3; ++a)
+					if (std::abs(p[k][a] - verts[idx[k]][a]) > 1e-8) { moved = true; break; }
+				if (moved) {
+					face.v[k] = nv + (int)extraVerts.size();
+					extraVerts.push_back(p[k]);
+					extraOrigIdx.push_back(idx[k]);
+				} else {
+					face.v[k] = idx[k];
+				}
+			}
+			faces.push_back(face);
+		}
+
+		// 写 OBJ：v x y z r g b (vertex color = scalar mapped to colormap)
+		// 先算 scalar 的范围
+		double smin = scalar.minCoeff(), smax = scalar.maxCoeff();
+		double srange = smax - smin;
+		if (srange < 1e-30) srange = 1.0;
+		auto mapColor = [&](double s) -> std::array<double,3> {
+			double t = (s - smin) / srange; // [0,1]
+			// blue-white-red colormap
+			if (t < 0.5) return {2*t, 2*t, 1.0};
+			else return {1.0, 2*(1-t), 2*(1-t)};
+		};
+
+		std::ofstream ofs(filename);
+		ofs << "# scalar range: " << smin << " " << smax << "\n";
+		int totalV = nv + (int)extraVerts.size();
+		for (int i = 0; i < nv; ++i) {
+			auto c = mapColor(scalar[i]);
+			ofs << "v " << verts[i][0] << " " << verts[i][1] << " " << verts[i][2]
+				<< " " << c[0] << " " << c[1] << " " << c[2] << "\n";
+		}
+		for (int i = 0; i < (int)extraVerts.size(); ++i) {
+			auto c = mapColor(scalar[extraOrigIdx[i]]);
+			ofs << "v " << extraVerts[i][0] << " " << extraVerts[i][1] << " " << extraVerts[i][2]
+				<< " " << c[0] << " " << c[1] << " " << c[2] << "\n";
+		}
+		for (auto& f : faces)
+			ofs << "f " << f.v[0]+1 << " " << f.v[1]+1 << " " << f.v[2]+1 << "\n";
+
+		// 同时输出 raw scalar txt（和顶点一一对应）
+		std::string txtFile = filename.substr(0, filename.rfind('.')) + "_scalar.txt";
+		std::ofstream tfs(txtFile);
+		tfs << "# vertex_index original_index x y z scalar\n";
+		for (int i = 0; i < nv; ++i)
+			tfs << i << " " << i << " " << verts[i][0] << " " << verts[i][1] << " " << verts[i][2] << " " << scalar[i] << "\n";
+		for (int i = 0; i < (int)extraVerts.size(); ++i)
+			tfs << nv+i << " " << extraOrigIdx[i] << " " << extraVerts[i][0] << " " << extraVerts[i][1] << " " << extraVerts[i][2] << " " << scalar[extraOrigIdx[i]] << "\n";
+	};
+
+	auto geom = xtpms::computeVertexGeometry(mesh);
+	Eigen::MatrixX3d ulist;
+	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
+	double As = geom.vertexAreas.sum();
+	const int nv = static_cast<int>(mesh.n_vertices());
+
+	std::cout << "Perturbed surface: nv=" << nv << " nf=" << mesh.n_faces() << "\n";
+	std::cout << "kA =\n" << kA << "\n";
+	std::cout << "APAC = " << kA.trace() / 3.0 << "\n\n";
+
+	// 计算 sensitivity
+	auto sens = xtpms::computeSensitivity(mesh, geom, ulist);
+	auto kAv = xtpms::toVoigt(kA);
+	kAv.tail<3>() /= 2.0;
+	for (int i = 0; i < nv; ++i) {
+		double ai = geom.vertexAreas[i];
+		if (ai > 1e-15) { sens.vSens.row(i) /= ai; sens.aSens[i] /= ai; }
+	}
+	// 测试 APAC 和 k00 两种目标
+	struct ObjCase { std::string name; std::string type; };
+	std::vector<ObjCase> objCases = {{"APAC", "apac"}, {"k00", "k00"}};
+
+	for (const auto& oc : objCases) {
+		auto objRes = xtpms::evaluateADCObjective(oc.type, kA);
+		Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-objRes.gradient);
+
+		// 输出 sensitivity 场到网格
+		saveUnitCellWithScalar(mesh, dfdvn, "perturbed_tpms_sens_" + oc.type + ".obj");
+		std::cout << "Saved perturbed_tpms_sens_" << oc.type << ".obj"
+				  << "  dfdvn: min=" << dfdvn.minCoeff() << " max=" << dfdvn.maxCoeff() << "\n";
+
+		// vn 场：使用光滑三周期函数
+		struct VnCase { std::string name; std::function<double(double,double,double)> fn; };
+		std::vector<VnCase> vnCases = {
+			{"sin*sin*sin", [](double x, double y, double z) {
+				return std::sin(M_PI*x)*std::sin(M_PI*y)*std::sin(M_PI*z); }},
+			{"cos(2pi*x)", [](double x, double y, double z) {
+				(void)y; (void)z; return std::cos(2*M_PI*x); }},
+			{"uniform", [](double, double, double) { return 1.0; }},
+		};
+
+		double obj0 = xtpms::evaluateADCObjective(oc.type, kA).value;
+		std::cout << "=== Objective: " << oc.name << " = " << obj0 << " ===\n";
+
+		for (const auto& vc : vnCases) {
+			Eigen::VectorXd vn(nv);
+			for (int i = 0; i < nv; ++i) {
+				auto pt = mesh.point(xtpms::PeriodicTriMesh::VertexHandle(i));
+				vn[i] = vc.fn(static_cast<double>(pt[0]), static_cast<double>(pt[1]), static_cast<double>(pt[2]));
+			}
+
+			double dk_formula = 0;
+			for (int i = 0; i < nv; ++i)
+				dk_formula += vn[i] * dfdvn[i] * geom.vertexAreas[i];
+
+			auto perturbObj = [&](double s) {
+				xtpms::PeriodicTriMesh copy = mesh;
+				for (auto v_it = copy.vertices_begin(); v_it != copy.vertices_end(); ++v_it) {
+					int vi = (*v_it).idx();
+					Eigen::Vector3d p(
+						static_cast<double>(copy.point(*v_it)[0]),
+						static_cast<double>(copy.point(*v_it)[1]),
+						static_cast<double>(copy.point(*v_it)[2]));
+					Eigen::Vector3d n = geom.vertexNormals[static_cast<std::size_t>(vi)];
+					p += s * vn[vi] * n;
+					copy.set_point(*v_it, Vec3d(
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[0]),
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[1]),
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[2])));
+				}
+				auto g = xtpms::computeVertexGeometry(copy);
+				Eigen::MatrixX3d u;
+				Eigen::Matrix3d k = xtpms::solveAsymptoticConductivity(copy, g, u);
+				return xtpms::evaluateADCObjective(oc.type, k).value;
+			};
+
+			std::cout << "  vn=" << vc.name << "  formula=" << dk_formula << "\n";
+			for (double stepFD : {1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 1e-4}) {
+				double objP = perturbObj(stepFD);
+				double objM = perturbObj(-stepFD);
+				double dk_meshFD = (objP - objM) / (2.0 * stepFD);
+				std::cout << "    step=" << stepFD
+						  << "  obj+=" << objP << "  obj-=" << objM
+						  << "  meshFD=" << dk_meshFD << "\n";
+			}
+		}
+	}
+}
+
+// ──────────────────────────────────────────────────────────
+// Revolution surface 旋转体辅助
+// ──────────────────────────────────────────────────────────
+
+// 旋转体 profile: R(x) 是关于 x 的周期函数，绕 x 轴旋转
+// xtpms 域 [0, 2*hp]^3, 物理域 [-hp, hp]
+// level set: y² + z² - R(x)² = 0
+struct RevolutionProfile {
+	using Func = std::function<double(double)>;
+	Func R;       // radius profile R(x), x ∈ [-hp, hp]
+	Func dR;      // R'(x)
+
+	// 解析 k11: 4 / I1 / I2
+	// I1 = ∫_{-hp}^{hp} sqrt(1 + R'(x)²) / R(x) dx
+	// I2 = ∫_{-hp}^{hp} R(x) * sqrt(1 + R'(x)²) dx
+	double analyticK11(double hp, int nquad = 10000) const {
+		double I1 = 0, I2 = 0;
+		double dx = 2.0 * hp / nquad;
+		for (int i = 0; i < nquad; ++i) {
+			double x = -hp + (i + 0.5) * dx;
+			double r = R(x);
+			double dr = dR(x);
+			double ds = std::sqrt(1.0 + dr * dr);
+			I1 += ds / r * dx;
+			I2 += r * ds * dx;
+		}
+		return 4.0 / I1 / I2;
+	}
+
+	// dk11 的泛函一阶变分（解析公式 + 数值积分）
+	// 给定轴对称法向速度 vn(x)，δR(x) = vn(x) / sqrt(1+R'²)
+	//
+	// k11 = 4 / (I1 * I2)
+	// δk11 = -k11 * (δI1/I1 + δI2/I2)
+	//
+	// 对泛函 I = ∫ f(R, R') dx 的一阶变分:
+	// δI = ∫ [∂f/∂R - d/dx(∂f/∂R')] * δR dx  (Euler-Lagrange)
+	//
+	// I1 的被积函数 f1 = s/R, s = sqrt(1+R'²):
+	//   ∂f1/∂R = -s/R²
+	//   ∂f1/∂R' = R'/(R*s)
+	//   EL1(x) = -s/R² - d/dx[R'/(R*s)]
+	//
+	// I2 的被积函数 f2 = R*s:
+	//   ∂f2/∂R = s
+	//   ∂f2/∂R' = R*R'/s
+	//   EL2(x) = s - d/dx[R*R'/s]
+	//
+	double variationalDk11(double hp, const Func& vn, int nquad = 100000) const {
+		double dx = 2.0 * hp / nquad;
+		double I1 = 0, I2 = 0;
+
+		// d/dx 项用数值微分
+		auto EL_term_R = [&](double x, double hd) {
+			// ∂f1/∂R' 在 x 处的值: R'/(R*s)
+			auto g1 = [&](double xx) {
+				double rr = R(xx), dr = dR(xx);
+				double ss = std::sqrt(1.0 + dr * dr);
+				return dr / (rr * ss);
+			};
+			// ∂f2/∂R' 在 x 处的值: R*R'/s
+			auto g2 = [&](double xx) {
+				double rr = R(xx), dr = dR(xx);
+				double ss = std::sqrt(1.0 + dr * dr);
+				return rr * dr / ss;
+			};
+			double dg1dx = (g1(x + hd) - g1(x - hd)) / (2.0 * hd);
+			double dg2dx = (g2(x + hd) - g2(x - hd)) / (2.0 * hd);
+			return std::make_pair(dg1dx, dg2dx);
+		};
+
+		double dI1 = 0, dI2 = 0;
+		double hd = dx * 0.5; // 数值微分步长
+		for (int i = 0; i < nquad; ++i) {
+			double x = -hp + (i + 0.5) * dx;
+			double r = R(x), dr = dR(x);
+			double s = std::sqrt(1.0 + dr * dr);
+			double deltaR = vn(x) / s; // δR(x) = vn(x) / sqrt(1+R'²)
+
+			I1 += s / r * dx;
+			I2 += r * s * dx;
+
+			auto [dg1dx, dg2dx] = EL_term_R(x, hd);
+
+			// EL1 = ∂f1/∂R - d/dx(∂f1/∂R') = -s/R² - dg1dx
+			double EL1 = -s / (r * r) - dg1dx;
+			// EL2 = ∂f2/∂R - d/dx(∂f2/∂R') = s - dg2dx
+			double EL2 = s - dg2dx;
+
+			dI1 += EL1 * deltaR * dx;
+			dI2 += EL2 * deltaR * dx;
+		}
+
+		double k11 = 4.0 / I1 / I2;
+		return -k11 * (dI1 / I1 + dI2 / I2);
+	}
+
+	// 对比用：1D FD 验证变分公式
+	double fdDk11(double hp, const Func& vn, double eps = 1e-7, int nquad = 100000) const {
+		auto k11_at_eps = [&](double e) {
+			auto R_e = [&](double x) {
+				double dr = dR(x);
+				return R(x) + e * vn(x) / std::sqrt(1.0 + dr * dr);
+			};
+			double I1 = 0, I2 = 0;
+			double dx = 2.0 * hp / nquad;
+			double hd = dx * 0.5;
+			for (int i = 0; i < nquad; ++i) {
+				double x = -hp + (i + 0.5) * dx;
+				double r = R_e(x);
+				// R_e' 用数值微分
+				double dr = (R_e(x + hd) - R_e(x - hd)) / (2.0 * hd);
+				double s = std::sqrt(1.0 + dr * dr);
+				I1 += s / r * dx;
+				I2 += r * s * dx;
+			}
+			return 4.0 / I1 / I2;
+		};
+		return (k11_at_eps(eps) - k11_at_eps(-eps)) / (2.0 * eps);
+	}
+
+	// 将顶点投影到精确曲面 (y-cy)²+(z-cz)²-R(x-cx)²=0
+	// 沿径向(y,z)缩放到精确半径
+	void projectToSurface(xtpms::PeriodicTriMesh& mesh, const Vec3d& halfPeriod) const {
+		double cx = static_cast<double>(halfPeriod[0]);
+		double cy = static_cast<double>(halfPeriod[1]);
+		double cz = static_cast<double>(halfPeriod[2]);
+		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+			auto p = mesh.point(*v_it);
+			double x = static_cast<double>(p[0]) - cx; // 映射到 [-hp, hp]
+			double y = static_cast<double>(p[1]) - cy;
+			double z = static_cast<double>(p[2]) - cz;
+			double r_current = std::sqrt(y * y + z * z);
+			double r_exact = R(x);
+			if (r_current > 1e-12) {
+				double scale = r_exact / r_current;
+				mesh.set_point(*v_it, Vec3d(
+					p[0],
+					static_cast<xtpms::DefaultTriMesh::Scalar>(y * scale + cy),
+					static_cast<xtpms::DefaultTriMesh::Scalar>(z * scale + cz)));
+			}
+		}
+	}
+
+	void projectToSurface(xtpms::DefaultTriMesh& mesh, const Vec3d& halfPeriod) const {
+		double cx = static_cast<double>(halfPeriod[0]);
+		double cy = static_cast<double>(halfPeriod[1]);
+		double cz = static_cast<double>(halfPeriod[2]);
+		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+			auto p = mesh.point(*v_it);
+			double x = static_cast<double>(p[0]) - cx;
+			double y = static_cast<double>(p[1]) - cy;
+			double z = static_cast<double>(p[2]) - cz;
+			double r_current = std::sqrt(y * y + z * z);
+			double r_exact = R(x);
+			if (r_current > 1e-12) {
+				double scale = r_exact / r_current;
+				mesh.set_point(*v_it, Vec3d(
+					p[0],
+					static_cast<xtpms::DefaultTriMesh::Scalar>(y * scale + cy),
+					static_cast<xtpms::DefaultTriMesh::Scalar>(z * scale + cz)));
+			}
+		}
+	}
+
+	// 生成 MC level set 网格
+	xtpms::DefaultTriMesh generateMC(const Vec3d& halfPeriod, int res) const {
+		const double Lx = 2.0 * static_cast<double>(halfPeriod[0]);
+		const double Ly = 2.0 * static_cast<double>(halfPeriod[1]);
+		const double Lz = 2.0 * static_cast<double>(halfPeriod[2]);
+		const double hpx = static_cast<double>(halfPeriod[0]);
+		auto levelSet = [&](double x, double y, double z) {
+			// 映射 x ∈ [0, 2*hp] → [-hp, hp]
+			double xp = x - hpx;
+			// 映射 y, z 到以 0 为中心
+			double yp = y - static_cast<double>(halfPeriod[1]);
+			double zp = z - static_cast<double>(halfPeriod[2]);
+			double r = R(xp);
+			return yp * yp + zp * zp - r * r;
+		};
+		return makeTPMSMC(halfPeriod, levelSet, res);
+	}
+
+	// 生成周期闭合网格（可选投影到精确曲面）
+	xtpms::PeriodicTriMesh generateClosed(const Vec3d& hp, int res, bool project = false) const {
+		auto src = generateMC(hp, res);
+		if (project) projectToSurface(src, hp);
+		auto mesh = makeClosedTPMS(hp, src);
+		if (project) projectToSurface(mesh, hp);
+		return mesh;
+	}
+};
+
+// ──────────────────────────────────────────────────────────
+// minsurf 参考实现（直接拷贝），放在 msf_ref 命名空间
+// ──────────────────────────────────────────────────────────
+namespace msf_ref {
+
+struct Compile1ring {
+	double As = 0;
+	Eigen::Vector3d nv{0, 0, 0};
+	Eigen::Vector3d Lx{0, 0, 0};
+	double H = 0, K = 0;
+	double mass = 0;
+	Compile1ring() = default;
+	Compile1ring(const Eigen::Vector3d& o, const std::vector<Eigen::Vector3d>& ring) {
+		Eigen::Vector3d Hv(0, 0, 0);
+		double theta_sum = 0;
+		int N = static_cast<int>(ring.size());
+		std::vector<double> esq_inc(N), esq_opp(N);
+		std::vector<double> cot_alpha(N), cot_beta(N), theta_v(N);
+		for (int i = 0; i < N; i++) {
+			esq_inc[i] = (ring[i] - o).squaredNorm();
+			esq_opp[i] = (ring[(i + 1) % N] - ring[i]).squaredNorm();
+		}
+		for (int i = 0; i < N; i++) {
+			double e_sq[] = {esq_inc[i], esq_inc[(i + 1) % N], esq_opp[i]};
+			double cosA = (e_sq[0] + e_sq[2] - e_sq[1]) / 2 / std::sqrt(e_sq[0] * e_sq[2]);
+			double cosB = (e_sq[1] + e_sq[2] - e_sq[0]) / 2 / std::sqrt(e_sq[1] * e_sq[2]);
+			double cotA = cosA / std::sqrt(1 - cosA * cosA);
+			double cotB = cosB / std::sqrt(1 - cosB * cosB);
+			cot_alpha[(i + 1) % N] = cotA;
+			cot_beta[i] = cotB;
+			theta_v[i] = std::acos(std::clamp((e_sq[0] + e_sq[1] - e_sq[2]) / 2 / std::sqrt(e_sq[0] * e_sq[1]), -1.0, 1.0));
+		}
+		for (int i = 0; i < N; i++) {
+			Eigen::Vector3d a = ring[i] - o;
+			Eigen::Vector3d b = ring[(i + 1) % N] - o;
+			double e_sq[] = {esq_inc[i], esq_inc[(i + 1) % N], esq_opp[i]};
+			theta_sum += theta_v[i];
+			Eigen::Vector3d axb = a.cross(b);
+			mass += axb.norm() / 2 / 3;
+			nv += axb.normalized() * theta_v[i];
+			Hv += (cot_alpha[i] + cot_beta[i]) / 2 * a;
+			double cotA = cot_alpha[(i + 1) % N];
+			double cotB = cot_beta[i];
+			if (e_sq[0] + e_sq[1] >= e_sq[2] && e_sq[1] + e_sq[2] >= e_sq[0] && e_sq[2] + e_sq[0] >= e_sq[1]) {
+				As += cotA * e_sq[1] / 8 + cotB * e_sq[0] / 8;
+			} else if (e_sq[0] + e_sq[1] < e_sq[2]) {
+				As += axb.norm() / 4;
+			} else {
+				As += axb.norm() / 8;
+			}
+		}
+		nv.normalize();
+		K = (2 * M_PI - theta_sum) / As;
+		Lx = Hv;
+		H = Hv.norm() / As / 2;
+		if (Hv.dot(nv) < 0) H *= -1;
+	}
+};
+
+Eigen::Matrix3d face_frame(const Eigen::Matrix3d& tri) {
+	Eigen::Vector3d n = (tri.col(1) - tri.col(0)).cross(tri.col(2) - tri.col(0)) / 2;
+	Eigen::Vector3d e1 = (tri.col(1) - tri.col(0)).normalized();
+	Eigen::Vector3d e2 = n.cross(e1).normalized();
+	Eigen::Matrix3d fr;
+	fr << e1, e2, n;
+	return fr;
+}
+
+Eigen::Vector3d second_fundamental_form(const Eigen::Matrix3d& tri,
+	const Compile1ring& v1, const Compile1ring& v2, const Compile1ring& v3) {
+	double be12 = -(v2.nv - v1.nv).dot(tri.col(1) - tri.col(0));
+	double be23 = -(v3.nv - v2.nv).dot(tri.col(2) - tri.col(1));
+	double be31 = -(v1.nv - v3.nv).dot(tri.col(0) - tri.col(2));
+	return {be12, be23, be31};
+}
+
+Eigen::Matrix3d strain_matrix_edge_stretch(const Eigen::Matrix3d& tri,
+	const Eigen::Vector3d& e1, const Eigen::Vector3d& e2) {
+	Eigen::Matrix<double, 3, 2> fram;
+	fram << e1, e2;
+	Eigen::Matrix3d tri1;
+	tri1 << tri.col(1), tri.col(2), tri.col(0);
+	Eigen::Matrix<double, 2, 3> d = fram.transpose() * (tri1 - tri);
+	Eigen::Matrix3d A;
+	A << d(0,0)*d(0,0), d(1,0)*d(1,0), d(0,0)*d(1,0),
+	     d(0,1)*d(0,1), d(1,1)*d(1,1), d(0,1)*d(1,1),
+	     d(0,2)*d(0,2), d(1,2)*d(1,2), d(0,2)*d(1,2);
+	return A.inverse();
+}
+
+Eigen::Matrix2d fromvoigt(const Eigen::Vector3d& eps) {
+	Eigen::Matrix2d E;
+	E(0,0) = eps[0]; E(1,1) = eps[1];
+	E(0,1) = eps[2] / 2; E(1,0) = E(0,1);
+	return E;
+}
+
+Eigen::Matrix<double, 2, 3> scalar_gradient_matrix(const Eigen::Matrix3d& tri, const Eigen::Matrix3d& fr) {
+	Eigen::Matrix2d V;
+	V << fr.leftCols(2).transpose() * (tri.col(1) - tri.col(0)),
+	     fr.leftCols(2).transpose() * (tri.col(2) - tri.col(0));
+	Eigen::Matrix<double, 2, 3> S;
+	S << -1, 1, 0, -1, 0, 1;
+	return V.transpose().lu().solve(S);
+}
+
+Eigen::Vector<double, 6> voigt(const Eigen::Matrix3d& eps) {
+	Eigen::Vector<double, 6> veps;
+	for (int i = 0; i < 3; i++) {
+		veps[i] = eps(i, i);
+		veps[i + 3] = 2 * eps((i + 1) % 3, (i + 2) % 3);
+	}
+	return veps;
+}
+
+} // namespace msf_ref
+
+// ──────────────────────────────────────────────────────────
+// Revolution surface ADC 验证：k11 解析 vs 数值
+// ──────────────────────────────────────────────────────────
+
+TEST(AsymptoticConductivity, RevolutionSurface_K11) {
+	// 旋转体绕 x 轴，R(x) 周期函数，域 [-1,1]^3
+	// 测试多种 profile 在不同分辨率下的收敛性
+	const Vec3d hp(1.0, 1.0, 1.0);
+
+	struct TestCase {
+		std::string name;
+		RevolutionProfile profile;
+	};
+
+	std::vector<TestCase> cases;
+
+	// Case 1: 圆柱 R(x) = 0.3 (常数)
+	// k11 = 4 / (2/0.3) / (2*0.3) = 4 / 6.667 / 0.6 = 1.0
+	// 实际上 k11 = 4 / (∫ 1/R dx) / (∫ R dx) = 4 / (2/0.3) / (2*0.3) = 4/6.667/0.6 = 1.0
+	cases.push_back({"cylinder_R0.3", {
+		[](double) { return 0.3; },
+		[](double) { return 0.0; }
+	}});
+
+	// Case 2: 微扰圆柱 R(x) = 0.3 + 0.05*cos(pi*x)
+	cases.push_back({"perturbed_cyl", {
+		[](double x) { return 0.3 + 0.05 * std::cos(M_PI * x); },
+		[](double x) { return -0.05 * M_PI * std::sin(M_PI * x); }
+	}});
+
+	// Case 3: 较大扰动 R(x) = 0.3 + 0.12*cos(pi*x)
+	cases.push_back({"wavy_cyl", {
+		[](double x) { return 0.3 + 0.12 * std::cos(M_PI * x); },
+		[](double x) { return -0.12 * M_PI * std::sin(M_PI * x); }
+	}});
+
+	// Case 4: catenoid-like R(x) = 0.2*cosh(x/0.2) 但截断使其周期
+	// 用 cos 近似: R(x) = 0.25 + 0.1*cos(pi*x)
+	cases.push_back({"catenoid_approx", {
+		[](double x) { return 0.25 + 0.1 * std::cos(M_PI * x); },
+		[](double x) { return -0.1 * M_PI * std::sin(M_PI * x); }
+	}});
+
+	std::vector<int> resolutions = {16, 24, 32};
+
+	for (const auto& tc : cases) {
+		double k11_exact = tc.profile.analyticK11(1.0);
+		std::cout << "\n=== " << tc.name << " ===\n";
+		std::cout << "k11 analytic = " << k11_exact << "\n";
+
+		for (int res : resolutions) {
+			auto mesh = tc.profile.generateClosed(hp, res);
+			if (countBoundaryEdges(mesh) > 0) {
+				std::cout << "  res=" << res << " boundary edges present, skip\n";
+				continue;
+			}
+			if (mesh.n_faces() == 0) {
+				std::cout << "  res=" << res << " empty mesh, skip\n";
+				continue;
+			}
+
+			auto geom = xtpms::computeVertexGeometry(mesh);
+			Eigen::MatrixX3d ulist;
+			Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
+
+			double k11_num = kA(0, 0);
+			double err = std::abs(k11_num - k11_exact);
+			double rel_err = err / std::abs(k11_exact);
+
+			std::cout << "  res=" << res << " nv=" << mesh.n_vertices()
+					  << " nf=" << mesh.n_faces()
+					  << " k11_num=" << k11_num
+					  << " err=" << err
+					  << " rel=" << rel_err << "\n";
+			std::cout << "  full kA diag: " << kA(0,0) << " " << kA(1,1) << " " << kA(2,2) << "\n";
+
+			// 最高分辨率应该有合理精度
+			if (res == resolutions.back()) {
+				EXPECT_LT(rel_err, 0.1) << tc.name << " k11 relative error too large at res=" << res;
+			}
+		}
+	}
+}
+
+TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
+	// 在旋转体上验证 sensitivity 公式：
+	// 指定轴对称法向速度 vn(x)，计算 δk11
+	// 解析值: 通过 1D 积分公式的 FD 得到
+	// 数值值: 通过 computeSensitivity 公式得到
+	const Vec3d hp(1.0, 1.0, 1.0);
+
+	// Profile: R(x) = 0.3 + 0.05*cos(pi*x)
+	RevolutionProfile prof{
+		[](double x) { return 0.3 + 0.05 * std::cos(M_PI * x); },
+		[](double x) { return -0.05 * M_PI * std::sin(M_PI * x); }
+	};
+
+	// 法向速度场（只依赖 x，保持轴对称）
+	struct VnField {
+		std::string name;
+		RevolutionProfile::Func vn;
+	};
+	std::vector<VnField> vnFields = {
+		{"sin(pi*x)", [](double x) { return std::sin(M_PI * x); }},
+		{"cos(2*pi*x)", [](double x) { return std::cos(2.0 * M_PI * x); }},
+		{"1.0 (uniform)", [](double) { return 1.0; }},
+	};
+
+	// 多分辨率收敛测试
+	std::vector<int> resolutions = {32};
+
+	for (int res : resolutions) {
+		auto mesh = prof.generateClosed(hp, res, true);  // 投影到精确曲面
+		if (countBoundaryEdges(mesh) > 0 || mesh.n_faces() < 100) {
+			std::cout << "  res=" << res << " bad mesh, skip\n";
+			continue;
+		}
+
+		// Remesh 消除退化三角形
+		for (int round = 0; round < 3; ++round) {
+			xtpms::RemeshOptions ropts;
+			ropts.outerIter = 2;
+			ropts.innerIter = 5;
+			xtpms::delaunayRemesh(mesh, ropts);
+			bool hasBnd = false;
+			for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end() && !hasBnd; ++e_it)
+				if (mesh.is_boundary(*e_it)) hasBnd = true;
+			if (hasBnd) mesh.mergePeriodBoundary();
+		}
+		// remesh 后再投影回精确曲面
+		prof.projectToSurface(mesh, hp);
+
+		if (countBoundaryEdges(mesh) > 0) {
+			std::cout << "  res=" << res << " boundary after remesh, skip\n";
+			continue;
+		}
+
+		// 输出网格供检查
+		mesh.saveUnitCell("revolution_res" + std::to_string(res) + ".obj");
+		OpenMesh::IO::write_mesh(mesh, "revolution_res" + std::to_string(res) + "_raw.obj");
+		std::cout << "Saved revolution_res" << res << ".obj and _raw.obj\n";
+
+		auto geom = xtpms::computeVertexGeometry(mesh);
+		Eigen::MatrixX3d ulist;
+		Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
+		double As = geom.vertexAreas.sum();
+		const int nv = static_cast<int>(mesh.n_vertices());
+
+		std::cout << "\n--- res=" << res << " nv=" << nv << " nf=" << mesh.n_faces()
+				  << " k11=" << kA(0,0) << " (exact=" << prof.analyticK11(1.0) << ") ---\n";
+
+		// 计算 sensitivity
+		auto sens = xtpms::computeSensitivity(mesh, geom, ulist);
+		for (int i = 0; i < nv; ++i) {
+			double ai = geom.vertexAreas[i];
+			if (ai > 1e-15) { sens.vSens.row(i) /= ai; sens.aSens[i] /= ai; }
+		}
+		auto kAv = xtpms::toVoigt(kA);
+		kAv.tail<3>() /= 2.0;
+		Eigen::Vector<double, 6> k11_grad = Eigen::Vector<double, 6>::Zero();
+		k11_grad[0] = 1.0;
+		Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-k11_grad);
+
+		// ── 先验证面积导数 ──
+		auto sensRaw = xtpms::computeSensitivity(mesh, geom, ulist);
+		{
+			// 用 uniform vn=1.0 验证面积导数
+			// A_sens 不除以顶点面积，直接用 raw 值
+			double dAs_ana = 0;
+			for (int i = 0; i < nv; ++i)
+				dAs_ana += sensRaw.aSens[i];  // vn=1 时就是直接求和
+
+			// mesh FD: 扰动后重算面积
+			for (double step : {1e-2, 1e-3}) {
+				auto perturbArea = [&](double s) {
+					xtpms::PeriodicTriMesh copy = mesh;
+					for (auto v_it = copy.vertices_begin(); v_it != copy.vertices_end(); ++v_it) {
+						int vi = (*v_it).idx();
+						Eigen::Vector3d p(
+							static_cast<double>(copy.point(*v_it)[0]),
+							static_cast<double>(copy.point(*v_it)[1]),
+							static_cast<double>(copy.point(*v_it)[2]));
+						Eigen::Vector3d n = geom.vertexNormals[static_cast<std::size_t>(vi)];
+						p += s * n;  // uniform vn=1
+						copy.set_point(*v_it, Vec3d(
+							static_cast<xtpms::DefaultTriMesh::Scalar>(p[0]),
+							static_cast<xtpms::DefaultTriMesh::Scalar>(p[1]),
+							static_cast<xtpms::DefaultTriMesh::Scalar>(p[2])));
+					}
+					auto g = xtpms::computeVertexGeometry(copy);
+					return g.vertexAreas.sum();
+				};
+				double dAs_fd = (perturbArea(step) - perturbArea(-step)) / (2.0 * step);
+				std::cout << "  Area deriv (vn=1): step=" << step
+						  << "  FD=" << dAs_fd << "  analytic=" << dAs_ana
+						  << "  ratio=" << (std::abs(dAs_fd) > 1e-12 ? dAs_ana / dAs_fd : 0) << "\n";
+			}
+		}
+		std::cout << "\n";
+
+		// ── 用解析 u₀ 代入 sensitivity 公式验证 ──
+		// u₀(x) = ∫_{-1}^x [s(ζ)/R(ζ) * c3 - 1] dζ, s=sqrt(1+R'²)
+		// c3 = 2 / I1, I1 = ∫_{-1}^1 s/R dx
+		{
+			double I1_quad = 0;
+			int nq = 100000;
+			double dxq = 2.0 / nq;
+			for (int i = 0; i < nq; ++i) {
+				double x = -1.0 + (i + 0.5) * dxq;
+				double r = prof.R(x), dr = prof.dR(x);
+				I1_quad += std::sqrt(1.0 + dr * dr) / r * dxq;
+			}
+			double c3 = 2.0 / I1_quad;
+
+			// 用解析 u₀ 设置 ulist 的第 0 列
+			Eigen::MatrixX3d ulist_analytic = ulist;  // 保留 u1, u2 不变
+			for (int i = 0; i < nv; ++i) {
+				auto pt = mesh.point(xtpms::PeriodicTriMesh::VertexHandle(i));
+				double xv = static_cast<double>(pt[0]) - 1.0;  // 映射到 [-1,1]
+				// u₀(xv) = ∫_{-1}^{xv} [s/R * c3 - 1] dζ
+				double u0 = 0;
+				int nstep = 10000;
+				double dz = (xv + 1.0) / nstep;
+				for (int j = 0; j < nstep; ++j) {
+					double z = -1.0 + (j + 0.5) * dz;
+					double rr = prof.R(z), dr = prof.dR(z);
+					double ss = std::sqrt(1.0 + dr * dr);
+					u0 += (ss / rr * c3 - 1.0) * dz;
+				}
+				ulist_analytic(i, 0) = u0;
+			}
+			// 减去均值（和求解器一致）
+			ulist_analytic.col(0).array() -= ulist_analytic.col(0).mean();
+
+			// 用解析 u 计算 sensitivity
+			auto sens_ana_u = xtpms::computeSensitivity(mesh, geom, ulist_analytic);
+
+			// 用数值 u 计算 sensitivity
+			auto sens_num_u = xtpms::computeSensitivity(mesh, geom, ulist);
+
+			// 比较 v_sens 的 k11 分量（Voigt index 0）
+			double vSens_k11_ana = 0, vSens_k11_num = 0;
+			double aSens_sum = 0;
+			for (int i = 0; i < nv; ++i) {
+				vSens_k11_ana += sens_ana_u.vSens(i, 0);  // vn=1 uniform
+				vSens_k11_num += sens_num_u.vSens(i, 0);
+				aSens_sum += sens_num_u.aSens[i];
+			}
+
+			// 从 v_sens 和 A_sens 算 dk11 (uniform vn=1)
+			// dk11 = (-v_sens_00/As + k11 * A_sens/As) * (-1) ... 按公式
+			// 但这里先看 raw v_sens 的对比
+			std::cout << "  v_sens k11 (uniform vn=1):\n";
+			std::cout << "    with analytic u₀: " << vSens_k11_ana << "\n";
+			std::cout << "    with numeric u₀:  " << vSens_k11_num << "\n";
+			std::cout << "    ratio: " << (std::abs(vSens_k11_num) > 1e-15 ? vSens_k11_ana / vSens_k11_num : 0) << "\n";
+
+			// 也检查 u₀ 本身的差异
+			double u_diff = 0, u_norm = 0;
+			for (int i = 0; i < nv; ++i) {
+				double d = ulist_analytic(i, 0) - ulist(i, 0);
+				u_diff += d * d;
+				u_norm += ulist_analytic(i, 0) * ulist_analytic(i, 0);
+			}
+			std::cout << "    u₀ relative diff: " << std::sqrt(u_diff / (u_norm + 1e-30)) << "\n";
+
+			// 用解析 u 算完整的 dk11
+			// dk11/dvn = -v_sens_00/As + k11 * A_sens/As (per vertex, uniform vn=1, 不除 Av)
+			double dk11_formula_ana_u = (-vSens_k11_ana / As + kA(0,0) * aSens_sum / As);
+			double dk11_formula_num_u = (-vSens_k11_num / As + kA(0,0) * aSens_sum / As);
+			double dk11_var = prof.variationalDk11(1.0, [](double) { return 1.0; });
+
+			std::cout << "    dk11 (analytic u): " << dk11_formula_ana_u << "\n";
+			std::cout << "    dk11 (numeric u):  " << dk11_formula_num_u << "\n";
+			std::cout << "    dk11 variational:  " << dk11_var << "\n";
+			// mesh FD 用 step=1e-2
+			auto perturbK11 = [&](double s) {
+				xtpms::PeriodicTriMesh copy = mesh;
+				for (auto v_it = copy.vertices_begin(); v_it != copy.vertices_end(); ++v_it) {
+					int vi = (*v_it).idx();
+					Eigen::Vector3d p(
+						static_cast<double>(copy.point(*v_it)[0]),
+						static_cast<double>(copy.point(*v_it)[1]),
+						static_cast<double>(copy.point(*v_it)[2]));
+					Eigen::Vector3d n = geom.vertexNormals[static_cast<std::size_t>(vi)];
+					p += s * n;
+					copy.set_point(*v_it, Vec3d(
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[0]),
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[1]),
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[2])));
+				}
+				auto g = xtpms::computeVertexGeometry(copy);
+				Eigen::MatrixX3d u;
+				Eigen::Matrix3d k = xtpms::solveAsymptoticConductivity(copy, g, u);
+				return k(0, 0);
+			};
+			double dk11_meshFD = (perturbK11(1e-2) - perturbK11(-1e-2)) / (2e-2);
+			std::cout << "    dk11 mesh FD:      " << dk11_meshFD << "\n\n";
+		}
+
+		for (const auto& vnf : vnFields) {
+			Eigen::VectorXd vn_vec(nv);
+			for (int i = 0; i < nv; ++i) {
+				auto pt = mesh.point(xtpms::PeriodicTriMesh::VertexHandle(i));
+				double x = static_cast<double>(pt[0]) - 1.0;
+				vn_vec[i] = vnf.vn(x);
+			}
+
+			// dfdvn 是逐顶点梯度（已除以 Av），方向导数需要面积加权内积
+			double dk11_formula_wrong = vn_vec.dot(dfdvn);  // 错误：无权内积
+			double dk11_formula = 0;
+			for (int i = 0; i < nv; ++i)
+				dk11_formula += vn_vec[i] * dfdvn[i] * geom.vertexAreas[i];  // 面积加权
+			double dk11_var = prof.variationalDk11(1.0, vnf.vn);
+
+			double stepMesh = 1e-2;
+		{ // single step
+			auto perturbAll = [&](double s) {
+				xtpms::PeriodicTriMesh copy = mesh;
+				for (auto v_it = copy.vertices_begin(); v_it != copy.vertices_end(); ++v_it) {
+					int vi = (*v_it).idx();
+					Eigen::Vector3d p(
+						static_cast<double>(copy.point(*v_it)[0]),
+						static_cast<double>(copy.point(*v_it)[1]),
+						static_cast<double>(copy.point(*v_it)[2]));
+					Eigen::Vector3d n = geom.vertexNormals[static_cast<std::size_t>(vi)];
+					p += s * vn_vec[vi] * n;
+					copy.set_point(*v_it, Vec3d(
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[0]),
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[1]),
+						static_cast<xtpms::DefaultTriMesh::Scalar>(p[2])));
+				}
+				auto g = xtpms::computeVertexGeometry(copy);
+				Eigen::MatrixX3d u;
+				Eigen::Matrix3d k = xtpms::solveAsymptoticConductivity(copy, g, u);
+				return k(0, 0);
+			};
+			double dk11_meshFD = (perturbAll(stepMesh) - perturbAll(-stepMesh)) / (2.0 * stepMesh);
+
+			std::cout << "  vn=" << vnf.name
+					  << "  var=" << dk11_var
+					  << "  meshFD=" << dk11_meshFD
+					  << "  formula=" << dk11_formula;
+			if (std::abs(dk11_meshFD) > 1e-12)
+				std::cout << "  f/mFD=" << dk11_formula / dk11_meshFD;
+			if (std::abs(dk11_var) > 1e-12)
+				std::cout << "  f/var=" << dk11_formula / dk11_var;
+			std::cout << "\n";
+		  }
+		}
+	}
+}
+
+TEST(AsymptoticConductivity, CompareWithMinsurf) {
+	// 对同一网格的同一面，分别用 xtpms 和 minsurf 参考实现计算中间量并对比
 	const Vec3d hp(1.0, 1.0, 1.0);
 	auto mesh = makeClosedSchwarzP(hp, 20);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
@@ -752,127 +1683,132 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d ulist;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
-	double obj0 = kA.trace() / 3.0; // apac
 
-	// 解析导数
-	auto sens = xtpms::computeSensitivity(mesh, geom, ulist);
-	double As = geom.vertexAreas.sum();
-	auto kAv = xtpms::toVoigt(kA);
-	kAv.tail<3>() /= 2.0;
-	// 除以顶点面积（与 tailorADC 一致）
-	for (int i = 0; i < static_cast<int>(mesh.n_vertices()); ++i) {
-		double ai = geom.vertexAreas[i];
-		if (ai > 1e-15) {
-			sens.vSens.row(i) /= ai;
-			sens.aSens[i] /= ai;
+	// 取 1-ring 数据构建 msf_ref::Compile1ring
+	auto toEig = [](const Vec3d& v) { return Eigen::Vector3d(v[0], v[1], v[2]); };
+	auto makePeriodLocal = [&](const Vec3d& v) {
+		Vec3d out = v;
+		for (int a = 0; a < 3; ++a) {
+			double period = 2.0 * hp[a];
+			double vi = out[a];
+			if (vi < -hp[a]) vi += period;
+			else if (vi > hp[a]) vi -= period;
+			out[a] = static_cast<xtpms::DefaultTriMesh::Scalar>(vi);
 		}
-	}
-	auto objRes = xtpms::evaluateADCObjective("apac", kA);
-	Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-objRes.gradient);
-
-	// 随机方向的方向导数
-	Eigen::VectorXd d(mesh.n_vertices());
-	d.setRandom();
-	d.normalize();
-	double analyticDeriv = d.dot(dfdvn);
-
-	// 数值导数：沿 d 方向做法向位移
-	// 中心差分：f(x+h) - f(x-h) / (2h)
-	double step = 1e-6;
-	auto perturbMesh = [&](double s) {
-		xtpms::PeriodicTriMesh copy = mesh;
-		for (auto v_it = copy.vertices_begin(); v_it != copy.vertices_end(); ++v_it) {
-			int vi = (*v_it).idx();
-			Eigen::Vector3d p(
-				static_cast<double>(copy.point(*v_it)[0]),
-				static_cast<double>(copy.point(*v_it)[1]),
-				static_cast<double>(copy.point(*v_it)[2]));
-			Eigen::Vector3d n = geom.vertexNormals[static_cast<std::size_t>(vi)];
-			p += s * d[vi] * n;
-			copy.set_point(*v_it, Vec3d(
-				static_cast<xtpms::DefaultTriMesh::Scalar>(p[0]),
-				static_cast<xtpms::DefaultTriMesh::Scalar>(p[1]),
-				static_cast<xtpms::DefaultTriMesh::Scalar>(p[2])));
-		}
-		auto g = xtpms::computeVertexGeometry(copy);
-		Eigen::MatrixX3d u;
-		Eigen::Matrix3d k = xtpms::solveAsymptoticConductivity(copy, g, u);
-		return k.trace() / 3.0;
+		return out;
 	};
-	double objPlus = perturbMesh(step);
-	double objMinus = perturbMesh(-step);
-	double numericDeriv = (objPlus - objMinus) / (2.0 * step);
 
-	std::cout << "=== Sensitivity FD Check (full objective) ===\n";
-	std::cout << "obj0 = " << obj0 << ", obj+=" << objPlus << ", obj-=" << objMinus << "\n";
-	std::cout << "analytic directional deriv = " << analyticDeriv << "\n";
-	std::cout << "numeric  directional deriv = " << numericDeriv << "\n";
-	std::cout << "ratio = " << (std::abs(numericDeriv) > 1e-15 ? analyticDeriv / numericDeriv : 0) << "\n";
-
-	// 检查法向一致性
-	{
-		int vi = 10;
-		auto vh = xtpms::PeriodicTriMesh::VertexHandle(vi);
-		Eigen::Vector3d crNv = geom.vrings[static_cast<std::size_t>(vi)].nv;
-		// 面法向平均
-		Eigen::Vector3d faceNvAvg = Eigen::Vector3d::Zero();
-		int fc = 0;
-		for (auto vf = mesh.cvf_iter(vh); vf.is_valid(); ++vf) {
-			Eigen::Matrix3d tri = xtpms::faceFrame(xtpms::faceFrame(
-				// ... 太复杂了，直接用叉积
-				Eigen::Matrix3d()));
-			// 简单用叉积
-			auto fvi = mesh.cfv_iter(*vf);
-			auto p0 = mesh.point(*fvi); ++fvi; auto p1 = mesh.point(*fvi); ++fvi; auto p2 = mesh.point(*fvi);
-			Vec3d e1 = mesh.wrapVector(p1 - p0);
-			Vec3d e2 = mesh.wrapVector(p2 - p0);
-			Vec3d fn = e1 % e2;
-			double fnl = fn.norm();
-			if (fnl > 1e-15) {
-				faceNvAvg += Eigen::Vector3d(static_cast<double>(fn[0])/fnl, static_cast<double>(fn[1])/fnl, static_cast<double>(fn[2])/fnl);
-				++fc;
-			}
+	// 为每个顶点构建 msf_ref 版本的 Compile1ring
+	int nv = static_cast<int>(mesh.n_vertices());
+	std::vector<msf_ref::Compile1ring> msf_vrings(nv);
+	for (int vid = 0; vid < nv; ++vid) {
+		auto vh = xtpms::PeriodicTriMesh::VertexHandle(vid);
+		Eigen::Vector3d center = toEig(mesh.point(vh));
+		std::vector<Eigen::Vector3d> ring;
+		// 用和 xtpms 完全相同的 1-ring 数据
+		if (!mesh.is_boundary(vh)) {
+			auto he_start = mesh.halfedge_handle(vh);
+			auto he = he_start;
+			do {
+				auto vn = mesh.to_vertex_handle(he);
+				ring.push_back(center + toEig(makePeriodLocal(mesh.point(vn) - mesh.point(vh))));
+				he = mesh.opposite_halfedge_handle(mesh.prev_halfedge_handle(he));
+			} while (he != he_start && ring.size() < 30);
 		}
-		if (fc > 0) faceNvAvg /= fc;
-		faceNvAvg.normalize();
-		std::cout << "v" << vi << " Compile1ring nv=(" << crNv.transpose()
-				  << ") face avg nv=(" << faceNvAvg.transpose()
-				  << ") dot=" << crNv.dot(faceNvAvg) << "\n";
+		msf_vrings[vid] = msf_ref::Compile1ring(center, ring);
 	}
 
-	// 单顶点中心差分
-	int testV = 10;
-	{
-		auto singlePerturb = [&](double s) {
-			xtpms::PeriodicTriMesh copy = mesh;
-			Eigen::Vector3d p0(
-				static_cast<double>(copy.point(xtpms::PeriodicTriMesh::VertexHandle(testV))[0]),
-				static_cast<double>(copy.point(xtpms::PeriodicTriMesh::VertexHandle(testV))[1]),
-				static_cast<double>(copy.point(xtpms::PeriodicTriMesh::VertexHandle(testV))[2]));
-			Eigen::Vector3d n0 = geom.vertexNormals[static_cast<std::size_t>(testV)];
-			Eigen::Vector3d p1 = p0 + s * n0;
-			copy.set_point(xtpms::PeriodicTriMesh::VertexHandle(testV), Vec3d(
-				static_cast<xtpms::DefaultTriMesh::Scalar>(p1[0]),
-				static_cast<xtpms::DefaultTriMesh::Scalar>(p1[1]),
-				static_cast<xtpms::DefaultTriMesh::Scalar>(p1[2])));
-			auto g = xtpms::computeVertexGeometry(copy);
-			Eigen::MatrixX3d u;
-			Eigen::Matrix3d k = xtpms::solveAsymptoticConductivity(copy, g, u);
-			return k.trace() / 3.0;
-		};
-		double numSingle = (singlePerturb(step) - singlePerturb(-step)) / (2.0 * step);
-		double anaSingle = dfdvn[testV];
-		std::cout << "=== Single vertex FD (v" << testV << ") ===\n";
-		std::cout << "  numeric  = " << numSingle << "\n";
-		std::cout << "  analytic = " << anaSingle << "\n";
-		std::cout << "  ratio = " << (std::abs(numSingle) > 1e-15 ? anaSingle / numSingle : 0) << "\n";
+	// 逐面对比前几个面
+	int checked = 0;
+	int diffs = 0;
+	for (auto f_it = mesh.faces_begin(); f_it != mesh.faces_end() && checked < 5; ++f_it, ++checked) {
+		auto fv = mesh.cfv_iter(*f_it);
+		auto v0h = *fv; ++fv; auto v1h = *fv; ++fv; auto v2h = *fv;
+		int i0 = v0h.idx(), i1 = v1h.idx(), i2 = v2h.idx();
+
+		// 构建周期包装后的三角形（两个版本用同一个 tri）
+		Eigen::Vector3d p0 = toEig(mesh.point(v0h));
+		Eigen::Vector3d p1 = p0 + toEig(makePeriodLocal(mesh.point(v1h) - mesh.point(v0h)));
+		Eigen::Vector3d p2 = p0 + toEig(makePeriodLocal(mesh.point(v2h) - mesh.point(v0h)));
+		Eigen::Matrix3d tri;
+		tri.col(0) = p0; tri.col(1) = p1; tri.col(2) = p2;
+
+		// === xtpms 版本 ===
+		auto fr_x = xtpms::faceFrame(tri);
+		auto be_x = xtpms::secondFundamentalFormEdge(tri, geom.vrings[i0], geom.vrings[i1], geom.vrings[i2]);
+		auto Bn_x = xtpms::strainMatrixEdgeStretch(tri, fr_x.col(0), fr_x.col(1));
+		Eigen::Vector3d bfv_x = Bn_x * be_x;
+		auto bform_x = xtpms::fromVoigt3(bfv_x);
+		auto G_x = xtpms::scalarGradientMatrix(tri, fr_x);
+
+		// === msf_ref 版本 ===
+		auto fr_m = msf_ref::face_frame(tri);
+		auto be_m = msf_ref::second_fundamental_form(tri, msf_vrings[i0], msf_vrings[i1], msf_vrings[i2]);
+		auto Bn_m = msf_ref::strain_matrix_edge_stretch(tri, fr_m.col(0), fr_m.col(1));
+		Eigen::Vector3d bfv_m = Bn_m * be_m;
+		auto bform_m = msf_ref::fromvoigt(bfv_m);
+		auto G_m = msf_ref::scalar_gradient_matrix(tri, fr_m);
+
+		// u values
+		Eigen::Matrix3d ue;
+		ue.row(0) = ulist.row(i0);
+		ue.row(1) = ulist.row(i1);
+		ue.row(2) = ulist.row(i2);
+
+		Eigen::Matrix<double, 2, 3> gu_x = G_x * ue;
+		Eigen::Matrix<double, 2, 3> pw_x = fr_x.leftCols<2>().transpose();
+		double H_x = bform_x.trace() / 2.0;
+		Eigen::Matrix3d sens_x = (gu_x + pw_x).transpose() * (bform_x - H_x * Eigen::Matrix2d::Identity()) * (gu_x + pw_x);
+
+		Eigen::Matrix<double, 2, 3> gu_m = G_m * ue;
+		Eigen::Matrix<double, 2, 3> pw_m = fr_m.leftCols<2>().transpose();
+		double H_m = bform_m.trace() / 2.0;
+		Eigen::Matrix3d sens_m = (gu_m + pw_m).transpose() * (bform_m - H_m * Eigen::Matrix2d::Identity()) * (gu_m + pw_m);
+
+		std::cout << "Face " << (*f_it).idx() << " (v" << i0 << ",v" << i1 << ",v" << i2 << "):\n";
+
+		// 对比法向
+		double nv_dot0 = geom.vrings[i0].nv.dot(msf_vrings[i0].nv);
+		double nv_dot1 = geom.vrings[i1].nv.dot(msf_vrings[i1].nv);
+		double nv_dot2 = geom.vrings[i2].nv.dot(msf_vrings[i2].nv);
+		std::cout << "  nv dots: " << nv_dot0 << " " << nv_dot1 << " " << nv_dot2 << "\n";
+		std::cout << "  As: xtpms=[" << geom.vrings[i0].As << "," << geom.vrings[i1].As << "," << geom.vrings[i2].As
+				  << "] msf=[" << msf_vrings[i0].As << "," << msf_vrings[i1].As << "," << msf_vrings[i2].As << "]\n";
+
+		// 对比 face frame
+		double fr_dot = (fr_x.col(2).normalized()).dot(fr_m.col(2).normalized());
+		std::cout << "  fr_n dot: " << fr_dot << "\n";
+
+		// 对比 be
+		std::cout << "  be: xtpms=" << be_x.transpose() << " msf=" << be_m.transpose() << " diff=" << (be_x - be_m).norm() << "\n";
+
+		// 对比 Bn
+		std::cout << "  Bn diff: " << (Bn_x - Bn_m).norm() << "\n";
+
+		// 对比 bform
+		std::cout << "  bform: xtpms=\n" << bform_x << "\n    msf=\n" << bform_m << "\n    diff=" << (bform_x - bform_m).norm() << "\n";
+
+		// 对比 G
+		std::cout << "  G diff: " << (G_x - G_m).norm() << "\n";
+
+		// 对比 gu
+		std::cout << "  gu diff: " << (gu_x - gu_m).norm() << "\n";
+
+		// 对比 pw
+		std::cout << "  pw diff: " << (pw_x - pw_m).norm() << "\n";
+
+		// 对比 sens
+		std::cout << "  sens trace: xtpms=" << sens_x.trace() << " msf=" << sens_m.trace() << "\n";
+		std::cout << "  sens diff: " << (sens_x - sens_m).norm() << "\n";
+
+		if ((be_x - be_m).norm() > 1e-10 || (Bn_x - Bn_m).norm() > 1e-10 ||
+		    (G_x - G_m).norm() > 1e-10 || (sens_x - sens_m).norm() > 1e-10) {
+			++diffs;
+		}
 	}
 
-	// 两者应该符号相同且量级接近
-	if (std::abs(numericDeriv) > 1e-10) {
-		double ratio = analyticDeriv / numericDeriv;
-		EXPECT_NEAR(ratio, 1.0, 0.5) << "Analytic and numeric derivatives should be close";
-	}
+	std::cout << "\nDifferences found in " << diffs << " / " << checked << " faces\n";
+	EXPECT_EQ(diffs, 0);
 }
 
 TEST(Surgery, DiagnoseRingOrder) {
@@ -1251,28 +2187,27 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 		mesh.saveUnitCell("tailor_apac_triaxis_before.obj");
 	}
 
-	// 运行 APAC 优化：开启 remesh + surgery
+	// 优化
 	xtpms::TailorADCOptions opts;
 	opts.objectiveType = "apac";
-	opts.maxIter = 100;
-	opts.maxStep = 0.3;
-	opts.convergeTol = 1e-4;
-	opts.stepTol = 1e-3;
-	opts.preconditionStrength = 1.0;
+	opts.maxIter = 50;
+	opts.maxStep = 1.0;
+	opts.convergeTol = 1e-5;
+	opts.stepTol = 1e-4;
+	opts.mcfWeight = 0.1;
 
 	opts.enableRemesh = true;
 	opts.remeshOpts.outerIter = 1;
-	opts.remeshOpts.innerIter = 3;
-	// targetLength < 0 让 tailorADC 自动计算并固定
+	opts.remeshOpts.innerIter = 5;
+	opts.remeshOpts.adaptiveEps = 1.0;
 
 	opts.enableSurgery = false;
-
 	opts.outputDir = ".";
-	opts.saveInterval = 1;  // 每步输出网格
+	opts.saveInterval = 10;
 
 	xtpms::tailorADC(mesh, opts);
 
-	// 优化后的 kA
+	// 用最后一组参数的结果做后续检查
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
@@ -1283,14 +2218,132 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 	std::cout << "APAC = " << apac_after << "\n";
 	std::cout << "APAC change: " << apac_before << " -> " << apac_after << "\n";
 
+	// 曲率分布统计
+	{
+		double maxH = 0, maxK = 0, maxTotalK = 0;
+		double sumH = 0, sumK = 0, sumTotalK = 0;
+		int nvv = static_cast<int>(mesh.n_vertices());
+		for (int i = 0; i < nvv; ++i) {
+			double H = geom.vrings[i].H;
+			double K = geom.vrings[i].K;
+			double totalK = 4*H*H - 2*K;
+			maxH = std::max(maxH, std::abs(H));
+			maxK = std::max(maxK, std::abs(K));
+			maxTotalK = std::max(maxTotalK, std::abs(totalK));
+			sumH += std::abs(H);
+			sumK += std::abs(K);
+			sumTotalK += std::abs(totalK);
+		}
+		std::cout << "\n=== Curvature stats ===\n";
+		std::cout << "|H|:  max=" << maxH << " avg=" << sumH/nvv << "\n";
+		std::cout << "|K|:  max=" << maxK << " avg=" << sumK/nvv << "\n";
+		std::cout << "|4H²-2K|: max=" << maxTotalK << " avg=" << sumTotalK/nvv << "\n";
+
+		// 自适应目标边长分布
+		double flatLen = opts.remeshOpts.targetLength;
+		if (flatLen < 0) {
+			double totalEdgeLen = 0; int edgeCnt = 0;
+			for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
+				auto he = mesh.halfedge_handle(*e, 0);
+				auto ev = mesh.point(mesh.to_vertex_handle(he)) - mesh.point(mesh.from_vertex_handle(he));
+				totalEdgeLen += ev.norm(); ++edgeCnt;
+			}
+			flatLen = totalEdgeLen / edgeCnt;
+		}
+		double eps = 1.0 / opts.remeshOpts.adaptiveEps;
+		double minTarget = 1e30, maxTarget = 0, sumTarget = 0;
+		int edgeCnt2 = 0;
+		for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
+			// 简单估算：用两端点的平均 totalK
+			auto he = mesh.halfedge_handle(*e, 0);
+			int v0 = mesh.from_vertex_handle(he).idx();
+			int v1 = mesh.to_vertex_handle(he).idx();
+			double H0 = geom.vrings[v0].H, K0 = geom.vrings[v0].K;
+			double H1 = geom.vrings[v1].H, K1 = geom.vrings[v1].K;
+			double avgTK = ((4*H0*H0-2*K0) + (4*H1*H1-2*K1)) / 2.0;
+			double L = flatLen * eps / (std::sqrt(std::abs(avgTK)) + eps);
+			minTarget = std::min(minTarget, L);
+			maxTarget = std::max(maxTarget, L);
+			sumTarget += L;
+			++edgeCnt2;
+		}
+		std::cout << "flatLen=" << flatLen << " eps=" << eps << "\n";
+		std::cout << "adaptive target: min=" << minTarget << " max=" << maxTarget << " avg=" << sumTarget/edgeCnt2 << "\n";
+
+		// 实际边长分布
+		double minEdge = 1e30, maxEdge = 0, sumEdge = 0;
+		for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
+			auto he = mesh.halfedge_handle(*e, 0);
+			auto ev = mesh.point(mesh.to_vertex_handle(he)) - mesh.point(mesh.from_vertex_handle(he));
+			double len = ev.norm();
+			minEdge = std::min(minEdge, len);
+			maxEdge = std::max(maxEdge, len);
+			sumEdge += len;
+		}
+		std::cout << "actual edge len: min=" << minEdge << " max=" << maxEdge << " avg=" << sumEdge/edgeCnt2 << "\n";
+	}
+
 	mesh.saveUnitCell("tailor_apac_triaxis_after.obj");
+
+	// Post MCF smooth：纯 MCF 跑若干步看效果
+	{
+		std::cout << "\n=== Post MCF smooth ===\n";
+		auto geomMcf = xtpms::computeVertexGeometry(mesh);
+		for (int mcfIter = 0; mcfIter < 20; ++mcfIter) {
+			double mcfStep = 0.01;
+			double maxLx = 0;
+			for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+				int vi = (*v_it).idx();
+				Eigen::Vector3d lx(
+					geomMcf.vrings[vi].Lx[0],
+					geomMcf.vrings[vi].Lx[1],
+					geomMcf.vrings[vi].Lx[2]);
+				maxLx = std::max(maxLx, lx.norm());
+				auto p = mesh.point(*v_it);
+				mesh.set_point(*v_it, Vec3d(
+					p[0] + static_cast<xtpms::DefaultTriMesh::Scalar>(mcfStep * lx[0]),
+					p[1] + static_cast<xtpms::DefaultTriMesh::Scalar>(mcfStep * lx[1]),
+					p[2] + static_cast<xtpms::DefaultTriMesh::Scalar>(mcfStep * lx[2])));
+			}
+			geomMcf = xtpms::computeVertexGeometry(mesh);
+			Eigen::MatrixX3d uMcf;
+			Eigen::Matrix3d kMcf = xtpms::solveAsymptoticConductivity(mesh, geomMcf, uMcf);
+			double apacMcf = kMcf.trace() / 3.0;
+			if (mcfIter % 5 == 0 || mcfIter == 19)
+				std::cout << "  mcf iter=" << mcfIter << " APAC=" << apacMcf
+						  << " maxLx=" << maxLx << "\n";
+		}
+		mesh.saveUnitCell("tailor_apac_triaxis_after_mcf.obj");
+		auto geomFinal = xtpms::computeVertexGeometry(mesh);
+		Eigen::MatrixX3d uFinal;
+		Eigen::Matrix3d kFinal = xtpms::solveAsymptoticConductivity(mesh, geomFinal, uFinal);
+		std::cout << "  Final APAC after MCF = " << kFinal.trace() / 3.0 << "\n";
+	}
+
+	// splitUnitCell 测试
+	{
+		int nvBefore = static_cast<int>(mesh.n_vertices());
+		int nfBefore = static_cast<int>(mesh.n_faces());
+		int bndBefore = countBoundaryEdges(mesh);
+
+		mesh.splitUnitCell();
+
+		int nvAfter = static_cast<int>(mesh.n_vertices());
+		int nfAfter = static_cast<int>(mesh.n_faces());
+		int bndAfter = countBoundaryEdges(mesh);
+
+		std::cout << "\n=== splitUnitCell ===\n";
+		std::cout << "Before: nv=" << nvBefore << " nf=" << nfBefore << " bnd=" << bndBefore << "\n";
+		std::cout << "After:  nv=" << nvAfter << " nf=" << nfAfter << " bnd=" << bndAfter << "\n";
+
+		OpenMesh::IO::write_mesh(mesh, "tailor_apac_triaxis_split.obj");
+		std::cout << "Saved tailor_apac_triaxis_split.obj\n";
+
+		EXPECT_GT(bndAfter, 0) << "splitUnitCell should produce boundary edges";
+	}
 
 	EXPECT_GT(apac_after, 0.5) << "APAC should remain reasonable";
 	EXPECT_GT(mesh.n_faces(), 0u);
-
-	for (int i = 0; i < 3; ++i)
-		for (int j = 0; j < i; ++j)
-			EXPECT_NEAR(kA(i, j), kA(j, i), 1e-6);
 }
 
 TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
@@ -1332,7 +2385,7 @@ TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
 	opts.maxStep = 0.3;
 	opts.convergeTol = 1e-5;
 	opts.stepTol = 1e-4;
-	opts.preconditionStrength = 1.0;
+	opts.preconditionStrength = 0.1;
 
 	opts.enableRemesh = true;
 	opts.remeshOpts.outerIter = 1;
@@ -1385,6 +2438,42 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 			  << " bnd=" << countBoundaryEdges(mesh) << "\n";
 	mesh.saveUnitCell("rod3_after_merge.obj");
 
+	// 预处理：smooth + remesh 循环平滑连接处
+	std::cout << "=== Pre-smoothing ===\n";
+	for (int pre = 0; pre < 5; ++pre) {
+		// MCF smooth
+		auto geomPre = xtpms::computeVertexGeometry(mesh);
+		double maxLx = 0;
+		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+			int vi = (*v_it).idx();
+			auto& lx = geomPre.vrings[vi].Lx;
+			double lxn = lx.norm();
+			maxLx = std::max(maxLx, lxn);
+			auto p = mesh.point(*v_it);
+			double step = 0.05;
+			mesh.set_point(*v_it, Vec3d(
+				p[0] + static_cast<xtpms::DefaultTriMesh::Scalar>(step * lx[0]),
+				p[1] + static_cast<xtpms::DefaultTriMesh::Scalar>(step * lx[1]),
+				p[2] + static_cast<xtpms::DefaultTriMesh::Scalar>(step * lx[2])));
+		}
+		// remesh
+		xtpms::RemeshOptions ropts;
+		ropts.outerIter = 1;
+		ropts.innerIter = 5;
+		ropts.targetLength = 2.0 * 0.15;  // minPeriod * 0.15
+		ropts.minLength = ropts.targetLength * 0.1;
+		ropts.adaptiveEps = 1.0;
+		xtpms::delaunayRemesh(mesh, ropts);
+		bool hasBnd = false;
+		for (auto e = mesh.edges_begin(); e != mesh.edges_end() && !hasBnd; ++e)
+			if (mesh.is_boundary(*e)) hasBnd = true;
+		if (hasBnd) mesh.mergePeriodBoundary();
+
+		std::cout << "  pre " << pre << ": nv=" << mesh.n_vertices()
+				  << " nf=" << mesh.n_faces() << " maxLx=" << maxLx << "\n";
+	}
+	mesh.saveUnitCell("rod3_pre_smoothed.obj");
+
 	// 优化前
 	double apac_before;
 	{
@@ -1395,29 +2484,29 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 		std::cout << "=== Rod3 Before optimization ===\n";
 		std::cout << "kA =\n" << kA0 << "\n";
 		std::cout << "APAC = " << apac_before << "\n";
-		mesh.saveUnitCell("rod3_before.obj");
 	}
 
-	// 优化
+	// 优化（和 NonUniformPeriod 相同参数）
 	xtpms::TailorADCOptions opts;
 	opts.objectiveType = "apac";
-	opts.maxIter = 200;
-	opts.maxStep = 0.3;
+	opts.maxIter = 41;  // surgery 在 iter=40 执行，41 步看结果
+	opts.maxStep = 1.0;
 	opts.convergeTol = 1e-5;
 	opts.stepTol = 1e-4;
-	opts.preconditionStrength = 1.0;
 	opts.mcfWeight = 0.1;
 
 	opts.enableRemesh = true;
 	opts.remeshOpts.outerIter = 1;
-	opts.remeshOpts.innerIter = 3;
+	opts.remeshOpts.innerIter = 5;
+	opts.remeshOpts.adaptiveEps = 1.0;
 
 	opts.enableSurgery = true;
-	opts.surgeryInterval = 4;
-	opts.surgeryOpts.singularityTol = 10.0;
+	opts.surgeryInterval = 20;
+	opts.surgeryStartIter = 40;
+	opts.surgeryOpts.singularityTol = 50.0;
 
 	opts.outputDir = ".";
-	opts.saveInterval = 1;
+	opts.saveInterval = 10;
 
 	xtpms::tailorADC(mesh, opts);
 

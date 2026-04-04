@@ -107,6 +107,10 @@ public:
 	// 将顶点 wrap 到基本域 [0, 2*halfPeriod) 内。
 	void periodShift();
 
+	// 在周期边界处截断跨周期边（和 minsurf split_unit_cell 对齐）
+	// 截断后网格不再是周期闭合的（有边界边在周期面上）
+	void splitUnitCell();
+
 	// 保存单元胞：在周期边界处 split 边，然后写 OBJ。
 	bool saveUnitCell(const std::string& filename) const;
 

@@ -965,6 +965,162 @@ void PeriodicTriMesh::periodShift() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// splitUnitCell（和 minsurf split_unit_cell 对齐）
+// 找跨周期边界的边，在边界面处 split
+// ──────────────────────────────────────────────────────────────────────────
+
+void PeriodicTriMesh::splitUnitCell() {
+	this->request_vertex_status();
+	this->request_edge_status();
+	this->request_halfedge_status();
+	this->request_face_status();
+
+	periodShift();
+
+	const double hp[3] = {
+		static_cast<double>(halfPeriod_[0]),
+		static_cast<double>(halfPeriod_[1]),
+		static_cast<double>(halfPeriod_[2])
+	};
+	const double L[3] = { 2.0 * hp[0], 2.0 * hp[1], 2.0 * hp[2] };
+
+	// ── Phase 1: 在周期边界处 split 跨界边 ──
+	for (int axis = 0; axis < 3; ++axis) {
+		std::vector<EdgeHandle> toSplit;
+		for (auto e_it = this->edges_begin(); e_it != this->edges_end(); ++e_it) {
+			if (this->status(*e_it).deleted()) continue;
+			HalfedgeHandle he = this->halfedge_handle(*e_it, 0);
+			Vec3d p0 = this->point(this->from_vertex_handle(he));
+			Vec3d p1 = p0 + wrapVector(this->point(this->to_vertex_handle(he)) - p0);
+
+			double a0 = static_cast<double>(p0[axis]);
+			double a1 = static_cast<double>(p1[axis]);
+
+			if (std::abs(a0) < 1e-5 || std::abs(a0 - L[axis]) < 1e-5) continue;
+			if (std::abs(a1) < 1e-5 || std::abs(a1 - L[axis]) < 1e-5) continue;
+			if (a1 < -1e-5 || a1 > L[axis] + 1e-5) toSplit.push_back(*e_it);
+		}
+
+		for (auto eh : toSplit) {
+			if (!eh.is_valid() || this->status(eh).deleted()) continue;
+			HalfedgeHandle he = this->halfedge_handle(eh, 0);
+			Vec3d p0 = this->point(this->from_vertex_handle(he));
+			Vec3d p1 = p0 + wrapVector(this->point(this->to_vertex_handle(he)) - p0);
+			double a0 = static_cast<double>(p0[axis]);
+			double a1 = static_cast<double>(p1[axis]);
+			double cut = (a1 > L[axis]) ? L[axis] : 0.0;
+			double denom = a1 - a0;
+			if (std::abs(denom) < 1e-15) continue;
+			double t = (cut - a0) / denom;
+			if (t <= 0.01 || t >= 0.99) continue;
+			Vec3d c;
+			for (int k = 0; k < 3; ++k)
+				c[k] = static_cast<DefaultTriMesh::Scalar>(
+					(1.0 - t) * static_cast<double>(p0[k]) + t * static_cast<double>(p1[k]));
+			this->split(eh, c);
+		}
+		periodShift();
+	}
+	this->garbage_collection();
+
+	// ── Phase 2: 像 saveUnitCell 一样 unwrap 面并 duplicate 边界顶点 ──
+	// 收集所有顶点（wrap 到 [0,L)）
+	const std::size_t nvOrig = this->n_vertices();
+	std::vector<std::array<double, 3>> verts(nvOrig);
+	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
+		const Vec3d& p = this->point(*v_it);
+		auto& v = verts[static_cast<std::size_t>((*v_it).idx())];
+		for (int i = 0; i < 3; ++i) {
+			double pi = static_cast<double>(p[i]);
+			while (pi < -1e-8) pi += L[i];
+			while (pi > L[i] + 1e-8) pi -= L[i];
+			v[static_cast<std::size_t>(i)] = pi;
+		}
+	}
+
+	// 逐面 unwrap，记录需要 dup 的顶点
+	struct Face3 { int v[3]; };
+	std::vector<Face3> newFaces;
+	newFaces.reserve(this->n_faces());
+	std::vector<std::array<double, 3>> extraVerts;
+	std::vector<int> extraOrigIdx; // 额外顶点对应的原始顶点
+
+	for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
+		auto fv = this->cfv_iter(*f_it);
+		int idx[3];
+		idx[0] = (*fv).idx(); ++fv;
+		idx[1] = (*fv).idx(); ++fv;
+		idx[2] = (*fv).idx();
+
+		std::array<double, 3> p[3];
+		p[0] = verts[static_cast<std::size_t>(idx[0])];
+		for (int k = 1; k < 3; ++k) {
+			p[k] = verts[static_cast<std::size_t>(idx[k])];
+			for (int ax = 0; ax < 3; ++ax) {
+				double diff = p[k][static_cast<std::size_t>(ax)] - p[0][static_cast<std::size_t>(ax)];
+				if (diff > hp[ax]) p[k][static_cast<std::size_t>(ax)] -= L[ax];
+				else if (diff < -hp[ax]) p[k][static_cast<std::size_t>(ax)] += L[ax];
+			}
+		}
+		// shift 整个面回 [0, L)
+		for (int ax = 0; ax < 3; ++ax) {
+			double centroid = (p[0][static_cast<std::size_t>(ax)] +
+							   p[1][static_cast<std::size_t>(ax)] +
+							   p[2][static_cast<std::size_t>(ax)]) / 3.0;
+			while (centroid < 0) {
+				for (int k = 0; k < 3; ++k) p[k][static_cast<std::size_t>(ax)] += L[ax];
+				centroid += L[ax];
+			}
+			while (centroid > L[ax]) {
+				for (int k = 0; k < 3; ++k) p[k][static_cast<std::size_t>(ax)] -= L[ax];
+				centroid -= L[ax];
+			}
+		}
+
+		Face3 face;
+		for (int k = 0; k < 3; ++k) {
+			const auto& orig = verts[static_cast<std::size_t>(idx[k])];
+			bool moved = false;
+			for (int ax = 0; ax < 3; ++ax) {
+				if (std::abs(p[k][static_cast<std::size_t>(ax)] - orig[static_cast<std::size_t>(ax)]) > 1e-8) {
+					moved = true; break;
+				}
+			}
+			if (moved) {
+				face.v[k] = static_cast<int>(nvOrig + extraVerts.size());
+				extraVerts.push_back(p[k]);
+				extraOrigIdx.push_back(idx[k]);
+			} else {
+				face.v[k] = idx[k];
+			}
+		}
+		newFaces.push_back(face);
+	}
+
+	// 重建网格
+	this->clear();
+	std::vector<VertexHandle> vh;
+	vh.reserve(nvOrig + extraVerts.size());
+	for (std::size_t i = 0; i < nvOrig; ++i) {
+		vh.push_back(this->add_vertex(Vec3d(
+			static_cast<DefaultTriMesh::Scalar>(verts[i][0]),
+			static_cast<DefaultTriMesh::Scalar>(verts[i][1]),
+			static_cast<DefaultTriMesh::Scalar>(verts[i][2]))));
+	}
+	for (const auto& ev : extraVerts) {
+		vh.push_back(this->add_vertex(Vec3d(
+			static_cast<DefaultTriMesh::Scalar>(ev[0]),
+			static_cast<DefaultTriMesh::Scalar>(ev[1]),
+			static_cast<DefaultTriMesh::Scalar>(ev[2]))));
+	}
+	for (const auto& f : newFaces) {
+		this->add_face(vh[static_cast<std::size_t>(f.v[0])],
+					   vh[static_cast<std::size_t>(f.v[1])],
+					   vh[static_cast<std::size_t>(f.v[2])]);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // saveUnitCell
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -1094,9 +1250,9 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 	this->request_halfedge_status();
 	this->request_face_status();
 
-	const Vec3d hp = halfPeriod_;
-
-	// [1] 计算每个顶点的奇异度
+	// ══════════════════════════════════════════════════════════
+	// [1] 计算每个顶点的奇异度（和 minsurf compute_singularity_measure 对齐）
+	// ══════════════════════════════════════════════════════════
 	const std::size_t nv = this->n_vertices();
 	auto geom = computeVertexGeometry(*this);
 	std::vector<double> singMeasure(nv, 0.0);
@@ -1104,102 +1260,216 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 		double H = geom.vrings[i].H;
 		double K = geom.vrings[i].K;
 		if (opts.surgeryType == 1) {
-			// type 1: |H|
 			singMeasure[i] = std::abs(H);
 		} else {
-			// type 2: max(|κ₁|, |κ₂|)，其中 κ₁,κ₂ = H ± sqrt(H²-K)
-			double disc = H * H - K;
-			if (disc < 0) disc = 0;
+			double disc = std::abs(H * H - K);
 			double sqrtDisc = std::sqrt(disc);
 			singMeasure[i] = std::max(std::abs(H + sqrtDisc), std::abs(H - sqrtDisc));
 		}
 	}
 
-	// 输出奇异度统计
+	// 输出曲率场到 OBJ（vertex color 编码 singMeasure）
 	{
-		double maxH = 0, sumH = 0;
-		int cnt = 0;
+		double smax = *std::max_element(singMeasure.begin(), singMeasure.end());
+		double sclamp = std::min(smax, opts.singularityTol * 2.0); // clamp 到 2x 阈值
+		std::ofstream ofs("surgery_curvature.obj");
+		ofs << "# singularity measure, threshold=" << opts.singularityTol << " max=" << smax << "\n";
+		for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
+			auto p = this->point(*v_it);
+			double s = singMeasure[static_cast<std::size_t>((*v_it).idx())];
+			double t = std::min(s / sclamp, 1.0);
+			// blue(0) → white(threshold) → red(2x threshold)
+			double r = t, g = 1.0 - t, b = 1.0 - t;
+			if (s > opts.singularityTol) { r = 1; g = 0; b = 0; } // 超阈值显示红色
+			ofs << "v " << p[0] << " " << p[1] << " " << p[2]
+				<< " " << r << " " << g << " " << b << "\n";
+		}
+		for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
+			auto fv = this->cfv_iter(*f_it);
+			ofs << "f " << (*fv).idx()+1; ++fv;
+			ofs << " " << (*fv).idx()+1; ++fv;
+			ofs << " " << (*fv).idx()+1 << "\n";
+		}
+		std::cerr << "[surgery] saved surgery_curvature.obj (max=" << smax << ")\n";
+	}
+
+	{
+		double maxH = 0, sumH = 0; int cnt = 0;
 		for (std::size_t i = 0; i < nv; ++i) {
-			if (singMeasure[i] > 0) { sumH += singMeasure[i]; ++cnt; }
+			sumH += singMeasure[i]; ++cnt;
 			maxH = std::max(maxH, singMeasure[i]);
 		}
 		std::cerr << "[surgery] maxH=" << maxH << " avgH=" << (cnt > 0 ? sumH / cnt : 0)
 				  << " threshold=" << opts.singularityTol << "\n";
 	}
 
-	// [2] 标记奇异顶点及周围面
-	std::vector<bool> deleteFace(this->n_faces(), false);
-	bool anyDeleted = false;
+	// ══════════════════════════════════════════════════════════
+	// [2] 标记奇异顶点 → 收集要删除的面 → 分连通片
+	// （和 minsurf search_singular_strips 对齐）
+	// ══════════════════════════════════════════════════════════
+	std::set<int> toDeleteFaceSet;
 	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
 		if (singMeasure[static_cast<std::size_t>((*v_it).idx())] > opts.singularityTol) {
-			for (auto vf_it = this->cvf_iter(*v_it); vf_it.is_valid(); ++vf_it) {
-				deleteFace[static_cast<std::size_t>((*vf_it).idx())] = true;
-				anyDeleted = true;
+			for (auto vf_it = this->cvf_iter(*v_it); vf_it.is_valid(); ++vf_it)
+				toDeleteFaceSet.insert((*vf_it).idx());
+		}
+	}
+	if (toDeleteFaceSet.empty()) return false;
+
+	// ══════════════════════════════════════════════════════════
+	// [3] expand_region: 用 Laplacian 扩展删除区域使边界更光滑
+	// （和 minsurf expand_region 对齐）
+	// ══════════════════════════════════════════════════════════
+	{
+		// 组装 L（cotangent Laplacian）
+		auto L = assembleLaplacian(*this, geom.cotWeights);
+		// L^T L 是双 Laplacian，非奇异
+		Eigen::SparseMatrix<double> LtL = (L.transpose() * L).eval();
+		Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(LtL);
+
+		// 将要删除的面分成连通片
+		std::set<int> remaining = toDeleteFaceSet;
+		std::vector<std::set<int>> patches;
+		while (!remaining.empty()) {
+			std::set<int> comp;
+			std::queue<int> q;
+			q.push(*remaining.begin());
+			remaining.erase(remaining.begin());
+			while (!q.empty()) {
+				int fid = q.front(); q.pop();
+				comp.insert(fid);
+				auto fh = this->face_handle(fid);
+				for (auto fh_it = this->cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
+					auto opp = this->opposite_halfedge_handle(*fh_it);
+					if (this->is_boundary(opp)) continue;
+					int adjF = this->face_handle(opp).idx();
+					if (remaining.count(adjF)) {
+						remaining.erase(adjF);
+						q.push(adjF);
+					}
+				}
+			}
+			patches.push_back(comp);
+		}
+
+		// 对每个连通片做 Laplacian 扩展
+		toDeleteFaceSet.clear();
+		for (auto& patch : patches) {
+			// rho: 标记奇异区域的指示函数
+			Eigen::VectorXd rho = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(nv));
+			for (int fi : patch) {
+				auto fh = this->face_handle(fi);
+				for (auto fv = this->cfv_iter(fh); fv.is_valid(); ++fv)
+					rho[(*fv).idx()] = 1.0;
+			}
+
+			// 解 L^T L x = L^T M rho（M = vertex area）
+			Eigen::VectorXd Mrho = geom.vertexAreas.cwiseProduct(rho);
+			Eigen::VectorXd x = solver.solve((L.transpose() * Mrho).eval());
+			x.array() -= geom.vertexAreas.dot(x) / geom.vertexAreas.sum();
+
+			// 找 patch 区域内 x 的范围
+			double xmin = 1e30, xmax = -1e30;
+			for (int fi : patch) {
+				auto fh = this->face_handle(fi);
+				for (auto fv = this->cfv_iter(fh); fv.is_valid(); ++fv) {
+					double xi = x[(*fv).idx()];
+					xmin = std::min(xmin, xi);
+					xmax = std::max(xmax, xi);
+				}
+			}
+
+			// BFS 扩展：邻接面的对顶点 x 值在 [xmin, xmax] 内则加入
+			std::set<int> pext;
+			std::queue<int> bfs;
+			std::vector<bool> inBfs(this->n_faces(), false);
+			for (int fi : patch) { bfs.push(fi); inBfs[static_cast<std::size_t>(fi)] = true; }
+			while (!bfs.empty()) {
+				int fi = bfs.front(); bfs.pop();
+				pext.insert(fi);
+				auto fh = this->face_handle(fi);
+				for (auto fh_it = this->cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
+					auto opp = this->opposite_halfedge_handle(*fh_it);
+					if (this->is_boundary(opp)) continue;
+					int adjF = this->face_handle(opp).idx();
+					if (inBfs[static_cast<std::size_t>(adjF)]) continue;
+					// 对面顶点
+					auto vop = this->to_vertex_handle(this->next_halfedge_handle(opp));
+					if (x[vop.idx()] >= xmin && x[vop.idx()] <= xmax) {
+						bfs.push(adjF);
+						inBfs[static_cast<std::size_t>(adjF)] = true;
+					}
+				}
+			}
+
+			// 去掉尖端面（只有一个邻接面在 pext 中的面）
+			for (int fi : pext) {
+				int adjCount = 0;
+				auto fh = this->face_handle(fi);
+				for (auto fh_it = this->cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
+					auto opp = this->opposite_halfedge_handle(*fh_it);
+					if (!this->is_boundary(opp) && pext.count(this->face_handle(opp).idx()))
+						++adjCount;
+				}
+				if (adjCount >= 2)
+					toDeleteFaceSet.insert(fi);
 			}
 		}
 	}
 
-	if (!anyDeleted) return false;
-
-	// [3] 删除标记的面
-	for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
-		if (deleteFace[static_cast<std::size_t>((*f_it).idx())]) {
-			this->delete_face(*f_it, false);
-		}
-	}
+	// ══════════════════════════════════════════════════════════
+	// [4] 删除面 → gc → 删孤岛
+	// （和 minsurf: delete_face → gc → deleteisoisland 对齐）
+	// ══════════════════════════════════════════════════════════
+	for (int fi : toDeleteFaceSet)
+		this->delete_face(this->face_handle(fi), false);
 	this->garbage_collection();
 
-	// [4] 删除孤岛（保留最大连通分量）
+	// deleteisoisland: 删除面数 < 最大连通片 * islandCullRatio 的碎片
 	{
-		// BFS 找连通分量
 		const std::size_t nf2 = this->n_faces();
 		std::vector<int> compId(nf2, -1);
 		std::vector<int> compSize;
 		int curComp = 0;
-
-		// 建 face-face 邻接
 		for (std::size_t fi = 0; fi < nf2; ++fi) {
 			if (compId[fi] >= 0) continue;
-			// BFS
 			std::queue<int> q;
 			q.push(static_cast<int>(fi));
 			compId[fi] = curComp;
 			int sz = 0;
 			while (!q.empty()) {
-				int fid = q.front(); q.pop();
-				++sz;
+				int fid = q.front(); q.pop(); ++sz;
 				auto fh = this->face_handle(fid);
 				for (auto fh_it = this->cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
-					HalfedgeHandle opp = this->opposite_halfedge_handle(*fh_it);
+					auto opp = this->opposite_halfedge_handle(*fh_it);
 					if (this->is_boundary(opp)) continue;
-					auto adjF = this->face_handle(opp);
-					int adjIdx = adjF.idx();
-					if (adjIdx >= 0 && static_cast<std::size_t>(adjIdx) < nf2 && compId[static_cast<std::size_t>(adjIdx)] < 0) {
-						compId[static_cast<std::size_t>(adjIdx)] = curComp;
-						q.push(adjIdx);
+					int adj = this->face_handle(opp).idx();
+					if (adj >= 0 && static_cast<std::size_t>(adj) < nf2 && compId[static_cast<std::size_t>(adj)] < 0) {
+						compId[static_cast<std::size_t>(adj)] = curComp;
+						q.push(adj);
 					}
 				}
 			}
-			compSize.push_back(sz);
-			++curComp;
+			compSize.push_back(sz); ++curComp;
 		}
-
 		if (curComp > 1) {
 			int maxComp = static_cast<int>(std::max_element(compSize.begin(), compSize.end()) - compSize.begin());
 			int threshold = static_cast<int>(compSize[static_cast<std::size_t>(maxComp)] * opts.islandCullRatio);
 			for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
 				int cid = compId[static_cast<std::size_t>((*f_it).idx())];
-				if (cid >= 0 && compSize[static_cast<std::size_t>(cid)] <= threshold) {
+				if (cid >= 0 && compSize[static_cast<std::size_t>(cid)] <= threshold)
 					this->delete_face(*f_it, false);
-				}
 			}
 			this->garbage_collection();
 		}
 	}
 
-	// [5] 填洞：提取边界环 → 提取 k-ring 子网格 → CGAL 填洞
+	// ══════════════════════════════════════════════════════════
+	// [5] fill_holes: 提取边界环 → 提取 4-ring 子网格 → CGAL 填洞
+	//     → 选正确补丁 → bilaplacian fairing
+	// （和 minsurf fill_one_hole + localSmoothing 对齐）
+	// ══════════════════════════════════════════════════════════
 	{
-		// 5a: 提取所有边界环
 		std::vector<std::vector<HalfedgeHandle>> loops;
 		{
 			std::set<int> visited;
@@ -1207,49 +1477,38 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 				if (!this->is_boundary(*he_it)) continue;
 				if (visited.count((*he_it).idx())) continue;
 				std::vector<HalfedgeHandle> loop;
-				HalfedgeHandle he = *he_it;
-				HalfedgeHandle start = he;
-				do {
-					loop.push_back(he);
-					visited.insert(he.idx());
-					he = this->next_halfedge_handle(he);
-				} while (he != start && loop.size() < 10000);
+				HalfedgeHandle he = *he_it, start = he;
+				do { loop.push_back(he); visited.insert(he.idx()); he = this->next_halfedge_handle(he); }
+				while (he != start && loop.size() < 10000);
 				if (!loop.empty()) loops.push_back(loop);
 			}
 		}
 		std::cerr << "[surgery] found " << loops.size() << " boundary loops\n";
 
-		// 5b: 对每个边界环，提取 k-ring 邻域子网格并用 CGAL 填洞
 		for (auto& loop : loops) {
-			// 收集边界环的顶点
+			// 收集种子顶点
 			std::set<int> seedVerts;
 			for (auto he : loop) seedVerts.insert(this->from_vertex_handle(he).idx());
 
-			// k-ring 扩展（k=4）
+			int holeEdgeNum = static_cast<int>(loop.size());
+
+			// 4-ring 扩展
 			std::set<int> ringVerts = seedVerts;
 			for (int kr = 0; kr < 4; ++kr) {
 				std::set<int> toAdd;
-				for (int vi : ringVerts) {
+				for (int vi : ringVerts)
 					for (auto voh = this->cvoh_iter(VertexHandle(vi)); voh.is_valid(); ++voh)
 						toAdd.insert(this->to_vertex_handle(*voh).idx());
-				}
 				for (int v : toAdd) ringVerts.insert(v);
 			}
 
 			// 提取子网格面
 			std::set<int> ringFaces;
-			for (int vi : ringVerts) {
+			for (int vi : ringVerts)
 				for (auto vf = this->cvf_iter(VertexHandle(vi)); vf.is_valid(); ++vf)
 					ringFaces.insert((*vf).idx());
-			}
 
-			// 构建 CGAL Surface_mesh
-			using CGALMesh = CGAL::Surface_mesh<CgalPoint>;
-			CGALMesh cmesh;
-			std::map<int, CGALMesh::Vertex_index> omToSm;
-			std::vector<int> smToOm;
-
-			// 先 BFS sync 子网格坐标（周期展开到连续）
+			// BFS sync 子网格坐标
 			std::map<int, Vec3d> syncedPos;
 			{
 				int startV = *ringVerts.begin();
@@ -1263,15 +1522,19 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 					for (auto voh = this->cvoh_iter(VertexHandle(cur)); voh.is_valid(); ++voh) {
 						int nb = this->to_vertex_handle(*voh).idx();
 						if (!ringVerts.count(nb) || bfsVisited.count(nb)) continue;
-						// sync 到 cur 附近
-						Vec3d diff = this->point(VertexHandle(nb)) - this->point(VertexHandle(cur));
-						Vec3d wrapped = wrapVector(diff);
-						syncedPos[nb] = syncedPos[cur] + wrapped;
+						syncedPos[nb] = syncedPos[cur] + wrapVector(
+							this->point(VertexHandle(nb)) - this->point(VertexHandle(cur)));
 						bfsVisited.insert(nb);
 						bfs.push(nb);
 					}
 				}
 			}
+
+			// 构建 CGAL mesh
+			using CGALMesh = CGAL::Surface_mesh<CgalPoint>;
+			CGALMesh cmesh;
+			std::map<int, CGALMesh::Vertex_index> omToSm;
+			std::vector<int> smToOm;
 
 			for (int vi : ringVerts) {
 				auto it = syncedPos.find(vi);
@@ -1282,7 +1545,6 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 				omToSm[vi] = smv;
 				smToOm.push_back(vi);
 			}
-
 			for (int fi : ringFaces) {
 				auto fv = this->cfv_iter(this->face_handle(fi));
 				int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
@@ -1290,175 +1552,267 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 				cmesh.add_face(omToSm[a], omToSm[b], omToSm[c]);
 			}
 
-			// CGAL 填洞：只填边数匹配原始边界环的洞（跳过 k-ring 外边界）
+			// CGAL 填洞
 			namespace PMP = CGAL::Polygon_mesh_processing;
+
+			// 输出填洞前的子网格
+			{
+				static int dbgHoleIdx = 0;
+				std::string fname = "surgery_kring_" + std::to_string(dbgHoleIdx++) + "_before.obj";
+				std::ofstream ofs(fname);
+				for (auto vi = cmesh.vertices_begin(); vi != cmesh.vertices_end(); ++vi) {
+					auto p = cmesh.point(*vi);
+					ofs << "v " << p.x() << " " << p.y() << " " << p.z() << "\n";
+				}
+				for (auto fi = cmesh.faces_begin(); fi != cmesh.faces_end(); ++fi) {
+					ofs << "f";
+					for (auto vi : cmesh.vertices_around_face(cmesh.halfedge(*fi)))
+						ofs << " " << (int)vi + 1;
+					ofs << "\n";
+				}
+				std::cerr << "[surgery] saved " << fname << " nv=" << cmesh.number_of_vertices()
+						  << " nf=" << cmesh.number_of_faces() << "\n";
+			}
+
 			std::vector<CGALMesh::Halfedge_index> borderCycles;
 			PMP::extract_boundary_cycles(cmesh, std::back_inserter(borderCycles));
 
-			int holeEdgeNum = static_cast<int>(loop.size());
+			// 反复填洞直到只剩外边界
+			int filledCount = 0;
+			for (int fillPass = 0; fillPass < 20; ++fillPass) {
+				borderCycles.clear();
+				PMP::extract_boundary_cycles(cmesh, std::back_inserter(borderCycles));
+				if (borderCycles.size() <= 1) break;
 
-			for (auto h : borderCycles) {
-				// 数这个边界环的边数
-				int cycleLen = 0;
-				auto hh = h;
-				do { ++cycleLen; hh = cmesh.next(hh); } while (hh != h && cycleLen < 100000);
-				// 只填匹配原始洞大小的边界（跳过 k-ring 外边界）
-				if (cycleLen > holeEdgeNum * 2) continue;
+				int maxCycleLen = 0, maxCycleIdx = 0;
+				for (int bi = 0; bi < static_cast<int>(borderCycles.size()); ++bi) {
+					int cl = 0; auto hh = borderCycles[static_cast<std::size_t>(bi)];
+					do { ++cl; hh = cmesh.next(hh); } while (hh != borderCycles[static_cast<std::size_t>(bi)] && cl < 100000);
+					if (cl > maxCycleLen) { maxCycleLen = cl; maxCycleIdx = bi; }
+				}
+				int minCycleLen = 100000, minCycleIdx = -1;
+				for (int bi = 0; bi < static_cast<int>(borderCycles.size()); ++bi) {
+					if (bi == maxCycleIdx) continue;
+					int cl = 0; auto hh = borderCycles[static_cast<std::size_t>(bi)];
+					do { ++cl; hh = cmesh.next(hh); } while (hh != borderCycles[static_cast<std::size_t>(bi)] && cl < 100000);
+					if (cl < minCycleLen) { minCycleLen = cl; minCycleIdx = bi; }
+				}
+				if (minCycleIdx < 0) break;
 
-				std::vector<CGALMesh::Face_index> patchFaces;
-				std::vector<CGALMesh::Vertex_index> patchVerts;
+				auto h = borderCycles[static_cast<std::size_t>(minCycleIdx)];
+				std::vector<CGALMesh::Face_index> pf;
+				std::vector<CGALMesh::Vertex_index> pv;
 				try {
 					PMP::triangulate_refine_and_fair_hole(cmesh, h,
-						std::back_inserter(patchFaces),
-						std::back_inserter(patchVerts));
+						std::back_inserter(pf), std::back_inserter(pv));
+					++filledCount;
 				} catch (...) {
-					std::cerr << "[surgery] CGAL hole fill failed for a boundary loop\n";
-					continue;
+					std::cerr << "[surgery] CGAL fill failed len=" << minCycleLen << "\n";
+					break;
 				}
+			}
+			std::cerr << "[surgery] hole filled=" << filledCount << "\n";
 
-				// 将新面和顶点添加回原网格
-				for (auto smv : patchVerts) {
-					auto p = cmesh.point(smv);
-					VertexHandle newV = this->add_vertex(Vec3d(
-						static_cast<DefaultTriMesh::Scalar>(p.x()),
-						static_cast<DefaultTriMesh::Scalar>(p.y()),
-						static_cast<DefaultTriMesh::Scalar>(p.z())));
-					omToSm[newV.idx()] = smv;
-					while (smToOm.size() <= static_cast<std::size_t>(smv.idx()))
-						smToOm.push_back(-1);
-					smToOm[static_cast<std::size_t>(smv.idx())] = newV.idx();
+			// 输出填洞后的子网格
+			{
+				static int dbgHoleIdx2 = 0;
+				std::string fname = "surgery_kring_" + std::to_string(dbgHoleIdx2++) + "_after.obj";
+				std::ofstream ofs(fname);
+				for (auto vi = cmesh.vertices_begin(); vi != cmesh.vertices_end(); ++vi) {
+					auto p = cmesh.point(*vi);
+					ofs << "v " << p.x() << " " << p.y() << " " << p.z() << "\n";
 				}
+				for (auto fi = cmesh.faces_begin(); fi != cmesh.faces_end(); ++fi) {
+					ofs << "f";
+					for (auto vi : cmesh.vertices_around_face(cmesh.halfedge(*fi)))
+						ofs << " " << (int)vi + 1;
+					ofs << "\n";
+				}
+				std::cerr << "[surgery] saved " << fname << "\n";
+			}
 
-				std::set<int> patchFaceIds;
-				for (auto smf : patchFaces) {
-					auto hverts = cmesh.vertices_around_face(cmesh.halfedge(smf));
-					std::vector<int> fv;
-					for (auto sv : hverts) {
-						if (static_cast<std::size_t>(sv.idx()) < smToOm.size() && smToOm[static_cast<std::size_t>(sv.idx())] >= 0)
-							fv.push_back(smToOm[static_cast<std::size_t>(sv.idx())]);
+			// 将 CGAL submesh 的新顶点和面写回原网格
+			// 遍历 cmesh 中所有不在原始 ringFaces 中的面
+			std::set<int> patchFaceIds;
+			for (auto fi = cmesh.faces_begin(); fi != cmesh.faces_end(); ++fi) {
+				auto hverts = cmesh.vertices_around_face(cmesh.halfedge(*fi));
+				std::vector<CGALMesh::Vertex_index> fverts(hverts.begin(), hverts.end());
+				// 检查这个面的所有顶点是否都在 smToOm 映射中
+				bool allMapped = true;
+				for (auto sv : fverts) {
+					if (static_cast<std::size_t>(sv.idx()) >= smToOm.size() || smToOm[static_cast<std::size_t>(sv.idx())] < 0) {
+						allMapped = false; break;
 					}
-					if (fv.size() == 3) {
-						auto fh = this->add_face(VertexHandle(fv[0]), VertexHandle(fv[1]), VertexHandle(fv[2]));
-						if (!fh.is_valid())
-							fh = this->add_face(VertexHandle(fv[0]), VertexHandle(fv[2]), VertexHandle(fv[1]));
-						if (fh.is_valid()) patchFaceIds.insert(fh.idx());
+				}
+				if (allMapped) continue; // 原始面，跳过
+
+				// 新面：确保所有顶点都有映射
+				std::vector<int> fv;
+				for (auto sv : fverts) {
+					if (static_cast<std::size_t>(sv.idx()) < smToOm.size() && smToOm[static_cast<std::size_t>(sv.idx())] >= 0) {
+						fv.push_back(smToOm[static_cast<std::size_t>(sv.idx())]);
+					} else {
+						// 新顶点
+						auto p = cmesh.point(sv);
+						VertexHandle newV = this->add_vertex(Vec3d(
+							static_cast<DefaultTriMesh::Scalar>(p.x()),
+							static_cast<DefaultTriMesh::Scalar>(p.y()),
+							static_cast<DefaultTriMesh::Scalar>(p.z())));
+						while (smToOm.size() <= static_cast<std::size_t>(sv.idx())) smToOm.push_back(-1);
+						smToOm[static_cast<std::size_t>(sv.idx())] = newV.idx();
+						fv.push_back(newV.idx());
 					}
 				}
+				if (fv.size() == 3) {
+					auto fh = this->add_face(VertexHandle(fv[0]), VertexHandle(fv[1]), VertexHandle(fv[2]));
+					if (!fh.is_valid())
+						fh = this->add_face(VertexHandle(fv[0]), VertexHandle(fv[2]), VertexHandle(fv[1]));
+					if (fh.is_valid()) patchFaceIds.insert(fh.idx());
+				}
+			}
 
-				// Bilaplacian 光滑：提取补丁+邻域子网格，固定边界顶点做 fairing
+				// localSmoothing: bilaplacian fairing（和 minsurf 对齐）
+				// 收集补丁+邻域面（扩展一层）
 				if (!patchFaceIds.empty()) {
-					// 收集补丁+邻域面
-					std::set<int> smoothFaces = patchFaceIds;
-					for (int fi : patchFaceIds) {
+					std::set<int> smoothFaces;
+					// 先把 seedVerts 的所有面加入（和 minsurf post_smooth_patch 对齐）
+					for (int sv : seedVerts)
+						for (auto vf = this->cvf_iter(VertexHandle(sv)); vf.is_valid(); ++vf)
+							smoothFaces.insert((*vf).idx());
+					for (int fi : patchFaceIds)
+						smoothFaces.insert(fi);
+					// 再扩展一层
+					{
+						std::set<int> toAdd;
+						for (int fi : smoothFaces) {
+							auto fh2 = this->face_handle(fi);
+							for (auto fv2 = this->cfv_iter(fh2); fv2.is_valid(); ++fv2)
+								for (auto vf2 = this->cvf_iter(*fv2); vf2.is_valid(); ++vf2)
+									toAdd.insert((*vf2).idx());
+						}
+						for (int fi : toAdd) smoothFaces.insert(fi);
+					}
+
+					// 提取子网格
+					std::map<int, int> subVMap;
+					std::vector<int> subVInv;
+					for (int fi : smoothFaces) {
 						auto fh2 = this->face_handle(fi);
 						for (auto fv2 = this->cfv_iter(fh2); fv2.is_valid(); ++fv2) {
-							for (auto vf2 = this->cvf_iter(*fv2); vf2.is_valid(); ++vf2)
-								smoothFaces.insert((*vf2).idx());
+							int vi = (*fv2).idx();
+							if (!subVMap.count(vi)) { subVMap[vi] = static_cast<int>(subVInv.size()); subVInv.push_back(vi); }
 						}
 					}
-
-					// 提取子网格 V, F
-					std::map<int, int> subVMap; // om vertex → sub index
-					std::vector<int> subVInv;   // sub index → om vertex
-					Eigen::MatrixX3d subV;
-					Eigen::MatrixX3i subF;
+					int snv = static_cast<int>(subVInv.size());
+					Eigen::MatrixX3d subV(snv, 3);
+					// BFS sync
+					std::vector<bool> synced(static_cast<std::size_t>(snv), false);
+					synced[0] = true;
 					{
-						for (int fi : smoothFaces) {
-							auto fh2 = this->face_handle(fi);
-							for (auto fv2 = this->cfv_iter(fh2); fv2.is_valid(); ++fv2) {
-								int vi = (*fv2).idx();
-								if (!subVMap.count(vi)) {
-									subVMap[vi] = static_cast<int>(subVInv.size());
-									subVInv.push_back(vi);
-								}
-							}
+						auto sp = syncedPos.count(subVInv[0]) ? syncedPos[subVInv[0]] : this->point(VertexHandle(subVInv[0]));
+						subV.row(0) << static_cast<double>(sp[0]), static_cast<double>(sp[1]), static_cast<double>(sp[2]);
+					}
+					std::queue<int> syncQ; syncQ.push(0);
+					while (!syncQ.empty()) {
+						int si = syncQ.front(); syncQ.pop();
+						int omi = subVInv[static_cast<std::size_t>(si)];
+						for (auto voh = this->cvoh_iter(VertexHandle(omi)); voh.is_valid(); ++voh) {
+							int nb = this->to_vertex_handle(*voh).idx();
+							if (!subVMap.count(nb)) continue;
+							int sn = subVMap[nb];
+							if (synced[static_cast<std::size_t>(sn)]) continue;
+							Vec3d w = wrapVector(this->point(VertexHandle(nb)) - this->point(VertexHandle(omi)));
+							subV.row(sn) = subV.row(si) + Eigen::RowVector3d(static_cast<double>(w[0]), static_cast<double>(w[1]), static_cast<double>(w[2]));
+							synced[static_cast<std::size_t>(sn)] = true;
+							syncQ.push(sn);
 						}
-						int snv = static_cast<int>(subVInv.size());
-						subV.resize(snv, 3);
-						// BFS sync 坐标到连续
-						std::vector<bool> synced(static_cast<std::size_t>(snv), false);
-						synced[0] = true;
-						{
-							int startOm = subVInv[0];
-							auto sp = syncedPos.count(startOm) ? syncedPos[startOm] : this->point(VertexHandle(startOm));
-							subV.row(0) << static_cast<double>(sp[0]), static_cast<double>(sp[1]), static_cast<double>(sp[2]);
-						}
-						std::queue<int> syncQ;
-						syncQ.push(0);
-						while (!syncQ.empty()) {
-							int si = syncQ.front(); syncQ.pop();
-							int omi = subVInv[static_cast<std::size_t>(si)];
+					}
+					Eigen::MatrixX3i subF(static_cast<int>(smoothFaces.size()), 3);
+					int fc = 0;
+					for (int fi : smoothFaces) {
+						auto fh2 = this->face_handle(fi);
+						auto fvi = this->cfv_iter(fh2);
+						subF(fc, 0) = subVMap[(*fvi).idx()]; ++fvi;
+						subF(fc, 1) = subVMap[(*fvi).idx()]; ++fvi;
+						subF(fc, 2) = subVMap[(*fvi).idx()]; ++fc;
+					}
+
+					// 固定顶点：边界+邻居（和 minsurf localSmoothing 对齐）
+					std::set<int> fixSet;
+					for (int si = 0; si < snv; ++si) {
+						int omi = subVInv[static_cast<std::size_t>(si)];
+						if (this->is_boundary(VertexHandle(omi))) {
+							fixSet.insert(si);
 							for (auto voh = this->cvoh_iter(VertexHandle(omi)); voh.is_valid(); ++voh) {
 								int nb = this->to_vertex_handle(*voh).idx();
-								if (!subVMap.count(nb)) continue;
-								int sn = subVMap[nb];
-								if (synced[static_cast<std::size_t>(sn)]) continue;
-								Vec3d diff = this->point(VertexHandle(nb)) - this->point(VertexHandle(omi));
-								Vec3d w = wrapVector(diff);
-								subV.row(sn) = subV.row(si) + Eigen::RowVector3d(
-									static_cast<double>(w[0]), static_cast<double>(w[1]), static_cast<double>(w[2]));
-								synced[static_cast<std::size_t>(sn)] = true;
-								syncQ.push(sn);
+								if (subVMap.count(nb)) fixSet.insert(subVMap[nb]);
 							}
 						}
-						subF.resize(static_cast<int>(smoothFaces.size()), 3);
-						int fc = 0;
-						for (int fi : smoothFaces) {
-							auto fh2 = this->face_handle(fi);
-							auto fvi = this->cfv_iter(fh2);
-							subF(fc, 0) = subVMap[(*fvi).idx()]; ++fvi;
-							subF(fc, 1) = subVMap[(*fvi).idx()]; ++fvi;
-							subF(fc, 2) = subVMap[(*fvi).idx()];
-							++fc;
-						}
 					}
+					Eigen::VectorXi fixDof(static_cast<int>(fixSet.size()));
+					Eigen::MatrixX3d fixedY(static_cast<int>(fixSet.size()), 3);
+					{ int i = 0; for (int si : fixSet) { fixDof[i] = si; fixedY.row(i) = subV.row(si); ++i; } }
 
-					// 找固定顶点（子网格边界顶点 + 非补丁顶点）
-					std::set<int> patchVertSet;
-					for (int fi : patchFaceIds) {
-						auto fh2 = this->face_handle(fi);
-						for (auto fv2 = this->cfv_iter(fh2); fv2.is_valid(); ++fv2)
-							patchVertSet.insert(subVMap[(*fv2).idx()]);
-					}
-					std::vector<int> fixedIdx;
-					Eigen::MatrixX3d fixedY;
-					for (int si = 0; si < static_cast<int>(subVInv.size()); ++si) {
-						if (!patchVertSet.count(si)) fixedIdx.push_back(si);
-					}
-					Eigen::VectorXi fixDof(static_cast<int>(fixedIdx.size()));
-					fixedY.resize(static_cast<int>(fixedIdx.size()), 3);
-					for (int i = 0; i < static_cast<int>(fixedIdx.size()); ++i) {
-						fixDof[i] = fixedIdx[static_cast<std::size_t>(i)];
-						fixedY.row(i) = subV.row(fixedIdx[static_cast<std::size_t>(i)]);
-					}
-
-					// Bilaplacian fairing (3 iterations)
+					// Bilaplacian fairing × 3
 					for (int fair = 0; fair < 3; ++fair) {
 						Eigen::SparseMatrix<double> L, M;
 						igl::cotmatrix(subV, subF, L);
 						igl::massmatrix(subV, subF, igl::MASSMATRIX_TYPE_DEFAULT, M);
 						Eigen::SparseMatrix<double> L2 = (L.transpose() * M.cwiseInverse() * L).eval();
-
-						Eigen::SparseMatrix<double> Aeq(0, static_cast<int>(subVInv.size()));
+						Eigen::SparseMatrix<double> Aeq(0, snv);
 						igl::min_quad_with_fixed_data<double> data;
-						if (!igl::min_quad_with_fixed_precompute(L2, fixDof, Aeq, true, data))
-							break;
-						Eigen::MatrixXd B = Eigen::MatrixXd::Zero(static_cast<int>(subVInv.size()), 3);
+						if (!igl::min_quad_with_fixed_precompute(L2, fixDof, Aeq, true, data)) break;
+						Eigen::MatrixXd B = Eigen::MatrixXd::Zero(snv, 3);
 						Eigen::MatrixXd Beq(0, 3);
-						if (!igl::min_quad_with_fixed_solve(data, B, fixedY, Beq, subV))
-							break;
+						if (!igl::min_quad_with_fixed_solve(data, B, fixedY, Beq, subV)) break;
 					}
 
-					// 写回原网格
-					for (int si = 0; si < static_cast<int>(subVInv.size()); ++si) {
-						int omi = subVInv[static_cast<std::size_t>(si)];
-						this->set_point(VertexHandle(omi), Vec3d(
+					// 写回
+					for (int si = 0; si < snv; ++si) {
+						this->set_point(VertexHandle(subVInv[static_cast<std::size_t>(si)]), Vec3d(
 							static_cast<DefaultTriMesh::Scalar>(subV(si, 0)),
 							static_cast<DefaultTriMesh::Scalar>(subV(si, 1)),
 							static_cast<DefaultTriMesh::Scalar>(subV(si, 2))));
 					}
 				}
 			}
+		}
+
+	// ══════════════════════════════════════════════════════════
+	// [6] 再次删孤岛（和 minsurf 对齐：fill_holes 后再 deleteisoisland）
+	// ══════════════════════════════════════════════════════════
+	{
+		const std::size_t nf2 = this->n_faces();
+		std::vector<int> compId(nf2, -1);
+		std::vector<int> compSize;
+		int curComp = 0;
+		for (std::size_t fi = 0; fi < nf2; ++fi) {
+			if (compId[fi] >= 0) continue;
+			std::queue<int> q;
+			q.push(static_cast<int>(fi)); compId[fi] = curComp; int sz = 0;
+			while (!q.empty()) {
+				int fid = q.front(); q.pop(); ++sz;
+				auto fh = this->face_handle(fid);
+				for (auto fh_it = this->cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
+					auto opp = this->opposite_halfedge_handle(*fh_it);
+					if (this->is_boundary(opp)) continue;
+					int adj = this->face_handle(opp).idx();
+					if (adj >= 0 && static_cast<std::size_t>(adj) < nf2 && compId[static_cast<std::size_t>(adj)] < 0) {
+						compId[static_cast<std::size_t>(adj)] = curComp; q.push(adj);
+					}
+				}
+			}
+			compSize.push_back(sz); ++curComp;
+		}
+		if (curComp > 1) {
+			int maxComp = static_cast<int>(std::max_element(compSize.begin(), compSize.end()) - compSize.begin());
+			int threshold = static_cast<int>(compSize[static_cast<std::size_t>(maxComp)] * opts.islandCullRatio);
+			for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
+				int cid = compId[static_cast<std::size_t>((*f_it).idx())];
+				if (cid >= 0 && compSize[static_cast<std::size_t>(cid)] <= threshold)
+					this->delete_face(*f_it, false);
+			}
+			this->garbage_collection();
 		}
 	}
 

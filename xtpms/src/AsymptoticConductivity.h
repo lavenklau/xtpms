@@ -97,6 +97,14 @@ SensitivityResult computeSensitivity(
 	const VertexGeometry& geom,
 	const Eigen::MatrixX3d& ulist);
 
+// 隐式 PDE 敏感度修正：补偿 computeSensitivity 中未考虑的
+// 离散周期网格上 d(u^TLu)/dδ 项
+void addImplicitPDESensitivity(
+	PeriodicTriMesh& mesh,
+	const VertexGeometry& geom,
+	const Eigen::MatrixX3d& ulist,
+	SensitivityResult& sens);
+
 // ADC 目标函数
 struct ADCObjective {
 	double value;
@@ -128,7 +136,7 @@ struct TailorADCOptions {
 	double convergeTol{1e-3};
 	double maxStep{0.3};
 	double stepTol{1e-3};
-	double preconditionStrength{1.0};
+	double preconditionStrength{0.1};
 	std::string objectiveType{"apac"};
 	double mcfWeight{0.1};           // 均曲率流（area regularization）权重
 
@@ -137,6 +145,7 @@ struct TailorADCOptions {
 
 	bool enableSurgery{true};
 	int surgeryInterval{4};   // 每 N 步检查一次
+	int surgeryStartIter{0};  // 从第几步开始允许 surgery
 	PeriodicTriMesh::SurgeryOptions surgeryOpts;
 
 	std::string outputDir;    // 非空时输出中间结果

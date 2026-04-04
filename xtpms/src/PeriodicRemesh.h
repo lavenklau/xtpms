@@ -11,6 +11,10 @@ struct RemeshOptions {
 	double splitRatio{1.5};     // 边长 > targetLen * splitRatio 时分裂
 	double collapseRatio{0.5};  // 边长 < targetLen * collapseRatio 时折叠
 	double minLength{-1.0};     // <0 时自动设为 targetLength/4
+	double adaptiveEps{0.6};    // 曲率自适应参数 (>0 启用)
+	                            // epsilon = 1/adaptiveEps
+	                            // L_target = flatLen * eps / (sqrt(|K_total|) + eps)
+	                            // K_total = 4H² - 2K
 	std::string debugOutputDir; // 非空时输出每个子步骤的网格
 };
 

@@ -1,5 +1,7 @@
 #include "PeriodicRemesh.h"
+#include "AsymptoticConductivity.h"
 
+#include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -175,6 +177,50 @@ double estimateAvgEdgeLength(const PeriodicTriMesh& m) {
 	return (cnt > 0) ? total / cnt : 0.1;
 }
 
+// 曲率自适应目标边长（和 minsurf findTotalCurvatureTargetL 完全对齐）
+// averageK = mean of (4H²-2K) at two endpoints
+// L = flatLen * eps / (fabs(sqrt(averageK)) + eps)
+double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh,
+							double flatLength, double epsilon) {
+	const Vec3d hp = m.halfPeriod();
+	HH he0 = m.halfedge_handle(eh, 0);
+	VH v[2] = { m.from_vertex_handle(he0), m.to_vertex_handle(he0) };
+
+	double averageK = 0;
+	for (int s = 0; s < 2; ++s) {
+		// 构建 1-ring → Compile1ring（和 minsurf 完全一致）
+		Eigen::Vector3d center(
+			static_cast<double>(m.point(v[s])[0]),
+			static_cast<double>(m.point(v[s])[1]),
+			static_cast<double>(m.point(v[s])[2]));
+		std::vector<Eigen::Vector3d> ring;
+		if (m.is_boundary(v[s])) {
+			for (auto voh = m.cvoh_iter(v[s]); voh.is_valid(); ++voh) {
+				Vec3d ev = makePeriod(m.point(m.to_vertex_handle(*voh)) - m.point(v[s]), hp);
+				ring.push_back(center + Eigen::Vector3d(ev[0], ev[1], ev[2]));
+			}
+		} else {
+			HH he_start = m.halfedge_handle(v[s]);
+			HH he = he_start;
+			do {
+				Vec3d ev = makePeriod(m.point(m.to_vertex_handle(he)) - m.point(v[s]), hp);
+				ring.push_back(center + Eigen::Vector3d(ev[0], ev[1], ev[2]));
+				he = m.opposite_halfedge_handle(m.prev_halfedge_handle(he));
+			} while (he != he_start && ring.size() < 30);
+		}
+		if (ring.size() >= 3) {
+			xtpms::Compile1ring vring(center, ring);
+			averageK += (4.0 * vring.H * vring.H - 2.0 * vring.K);
+		}
+	}
+	averageK /= 2.0;
+
+	// 和 minsurf 完全一致：fabs(sqrt(averageK))
+	double sqrtK = (averageK >= 0) ? std::sqrt(averageK) : std::sqrt(-averageK);
+	double L = flatLength * epsilon / (sqrtK + epsilon);
+	return L;
+}
+
 } // namespace
 
 // ══════════════════════════════════════════════════════════════
@@ -191,13 +237,20 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 
 	if (opts.innerIter <= 0) return;
 
-	double targetLen = opts.targetLength;
-	if (targetLen < 0) targetLen = estimateAvgEdgeLength(mesh);
+	double flatLen = opts.targetLength;
+	if (flatLen < 0) flatLen = estimateAvgEdgeLength(mesh);
 	double minLen = opts.minLength;
-	if (minLen < 0 || minLen > targetLen) minLen = targetLen / 4.0;
+	if (minLen < 0 || minLen > flatLen) minLen = flatLen / 4.0;
 
-	const double splitThresh = targetLen * opts.splitRatio;
-	const double collapseThresh = targetLen * opts.collapseRatio;
+	const double adaptEps = (opts.adaptiveEps > 0) ? (1.0 / opts.adaptiveEps) : 0;
+	const bool useAdaptive = (adaptEps > 0);
+
+	// 每条边的目标边长（自适应或全局）
+	auto edgeTargetLen = [&](EH eh) -> double {
+		if (useAdaptive)
+			return adaptiveTargetLength(mesh, eh, flatLen, adaptEps);
+		return flatLen;
+	};
 
 	const bool dbg = !opts.debugOutputDir.empty();
 	auto dbgSave = [&](const std::string& tag) {
@@ -214,7 +267,8 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 			std::vector<EH> toSplit;
 			for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
 				double len = periodEdgeLength(mesh, *e);
-				if (len > splitThresh && len > minLen)
+				double tgt = edgeTargetLen(*e);
+				if (len > tgt * opts.splitRatio && len > minLen)
 					toSplit.push_back(*e);
 			}
 			for (EH eh : toSplit) {
@@ -231,7 +285,8 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 			for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
 				if (mesh.status(*e).deleted()) continue;
 				double len = periodEdgeLength(mesh, *e);
-				if (len < collapseThresh)
+				double tgt = edgeTargetLen(*e);
+				if (len < tgt * opts.collapseRatio)
 					toCollapse.push_back(*e);
 			}
 			int collapsed = 0;
@@ -339,6 +394,21 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 			dbgSave("4_smooth" + std::to_string(inner));
 			flipDelaunay();
 			dbgSave("5_flip" + std::to_string(inner));
+		}
+	}
+
+	// 删除度为 3 的顶点（和 minsurf delete_degree3_faces 对齐）
+	for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+		if (mesh.status(*v_it).deleted()) continue;
+		if (mesh.valence(*v_it) == 3 && !mesh.is_boundary(*v_it)) {
+			VH neighbors[3];
+			int cnt = 0;
+			for (auto voh = mesh.cvoh_iter(*v_it); voh.is_valid() && cnt < 3; ++voh)
+				neighbors[cnt++] = mesh.to_vertex_handle(*voh);
+			if (cnt == 3) {
+				mesh.delete_vertex(*v_it, true);
+				mesh.add_face(neighbors[0], neighbors[1], neighbors[2]);
+			}
 		}
 	}
 

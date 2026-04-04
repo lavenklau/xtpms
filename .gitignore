@@ -378,3 +378,9 @@ vcpkg_installed/
 
 # CTest
 Testing/
+
+# VS solution and configure scripts (auto-generated)
+*.sln
+CMakePresets.json
+configure.cmd
+configure.ps1

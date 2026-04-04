@@ -448,21 +448,8 @@ Eigen::Matrix3d solveAsymptoticConductivity(
 
 	Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(L);
 	if (solver.info() != Eigen::Success) {
-		// 诊断信息
 		std::cerr << "solveAsymptoticConductivity: factorization failed"
-				  << " nv=" << mesh.n_vertices() << " ne=" << mesh.n_edges()
-				  << " nf=" << mesh.n_faces()
-				  << " L_rows=" << L.rows() << " L_nnz=" << L.nonZeros() << "\n";
-		// 检查 L 对角线
-		double minDiag = 1e30, maxDiag = -1e30;
-		int zeroDiag = 0;
-		for (int i = 0; i < L.rows(); ++i) {
-			double d = L.coeff(i, i);
-			minDiag = std::min(minDiag, d);
-			maxDiag = std::max(maxDiag, d);
-			if (std::abs(d) < 1e-15) ++zeroDiag;
-		}
-		std::cerr << "  L diag: min=" << minDiag << " max=" << maxDiag << " zeros=" << zeroDiag << "\n";
+				  << " nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 		outU = Eigen::MatrixX3d::Zero(mesh.n_vertices(), 3);
 		return Eigen::Matrix3d::Zero();
 	}
@@ -552,154 +539,6 @@ SensitivityResult computeSensitivity(
 	// （与 minsurf 一致：asym_cond_sensitivity 返回累加值）
 
 	return result;
-}
-
-// ══════════════════════════════════════════════════════════════
-// addImplicitPDESensitivity
-//   周期网格上离散 adjoint 修正：补偿 computeSensitivity 中
-//   未考虑的 PDE 解隐式依赖（d(u^TLu)/dδ）
-// ══════════════════════════════════════════════════════════════
-
-void addImplicitPDESensitivity(
-	PeriodicTriMesh& mesh,
-	const VertexGeometry& geom,
-	const Eigen::MatrixX3d& ulist,
-	SensitivityResult& sens) {
-
-	const int nv = static_cast<int>(mesh.n_vertices());
-	const Vec3d hp = mesh.halfPeriod();
-	const double eps = 1e-7;
-
-	// 对每个顶点 k：扰动 → 重算局部 cot 权和边向量 → 计算残差 → 修正
-	for (int k = 0; k < nv; ++k) {
-		VH vk(k);
-		Vec3d oldPos = mesh.point(vk);
-		Eigen::Vector3d nk = geom.vertexNormals[static_cast<std::size_t>(k)];
-		mesh.set_point(vk, Vec3d(
-			static_cast<DefaultTriMesh::Scalar>(static_cast<double>(oldPos[0]) + eps * nk[0]),
-			static_cast<DefaultTriMesh::Scalar>(static_cast<double>(oldPos[1]) + eps * nk[1]),
-			static_cast<DefaultTriMesh::Scalar>(static_cast<double>(oldPos[2]) + eps * nk[2])));
-
-		// 收集 star(k) 中所有边：所有包含 k 的面的所有边
-		// 用 set 避免重复
-		std::vector<EH> starEdges;
-		std::vector<bool> edgeSeen(mesh.n_edges(), false);
-		for (auto vf = mesh.cvf_iter(vk); vf.is_valid(); ++vf) {
-			for (auto fe = mesh.cfe_iter(*vf); fe.is_valid(); ++fe) {
-				if (!edgeSeen[static_cast<std::size_t>((*fe).idx())]) {
-					edgeSeen[static_cast<std::size_t>((*fe).idx())] = true;
-					starEdges.push_back(*fe);
-				}
-			}
-		}
-
-		// 对每条 star 边：计算新 cot 权和新边向量
-		// 然后计算 Δ(L*u - b) 的局部贡献
-		// residual_i(v) = Σ_w w_vw * (u_i(w) - u_i(v) + ev_i_vw)
-		// 基准残差 = 0 (因为 L*u = b)
-		// 只需计算 new_residual 的局部贡献
-
-		// 对每个 kA 分量 (Voigt 6)：累加 u^T * Δr
-		Eigen::Vector<double, 6> correction = Eigen::Vector<double, 6>::Zero();
-
-		for (const auto& eh : starEdges) {
-			double oldW = geom.cotWeights[static_cast<std::size_t>(eh.idx())];
-			double newW = computeCotWeight(mesh, eh);
-
-			// 确定边方向：halfedge(0) 的 from → to
-			HH he0 = mesh.halfedge_handle(eh, 0);
-			VH va = mesh.from_vertex_handle(he0);
-			VH vb = mesh.to_vertex_handle(he0);
-			int ia = va.idx(), ib = vb.idx();
-
-			// 旧边向量（a→b 方向）
-			Eigen::Vector3d oldEv = geom.edgeVectors[static_cast<std::size_t>(eh.idx())];
-			// halfedge(0) 的方向
-			if (mesh.halfedge_handle(eh, 0) != he0) oldEv = -oldEv;
-			// 新边向量
-			Eigen::Vector3d newEv = toEig(makePeriod(mesh.point(vb) - mesh.point(va), hp));
-
-			// 对 3 个方向 (i=0,1,2)：
-			// old_term(a) = oldW * (u_i(b) - u_i(a) + oldEv_i)
-			// new_term(a) = newW * (u_i(b) - u_i(a) + newEv_i)
-			// Δr_i(a) += new_term(a) - old_term(a)
-			// Δr_i(b) += -(new_term - old_term) (反向)
-
-			for (int i = 0; i < 3; ++i) {
-				double du_i = ulist(ib, i) - ulist(ia, i);
-
-				// d(b·u) = 2 u^T db - u^T dL u (Lagrangian result)
-				// 需要 v_sens 的修正 = -d(b·u) = u^T dL u - 2 u^T db
-
-				// u_i^T dL u_i 贡献（来自此边）:
-				// dL 的效果: Δw*(u(b)-u(a)) 加到 (Lu)(a)
-				// u^T dL u = -Δw * du² (因为 L 的结构)
-				double dw = newW - oldW;
-				double uTdLu_edge = -dw * du_i * du_i;
-
-				// u_i^T db_i 贡献（来自此边）:
-				// Δb(a) = -(newW*newEv - oldW*oldEv) for halfedge a→b
-				// u^T Δb = (u(a)-u(b)) * Δb(a)
-				double dBterm = -(newW * newEv[i] - oldW * oldEv[i]); // Δb_i(a)
-				double uTdb_edge = (ulist(ia, i) - ulist(ib, i)) * dBterm;
-
-				// 修正 = u^T dL u - 2 u^T db = -d(b·u)
-				for (int j = i; j < 3; ++j) {
-					double du_j = ulist(ib, j) - ulist(ia, j);
-					double dw_j = dw; // same weight change for all components
-
-					// u_j^T dL u_j (for cross-terms: u_j^T dL u_i)
-					double uTdLu_ij = -dw * du_i * du_j;
-
-					// u_j^T db_i (or symmetrized)
-					// For (i,j): d(b_i·u_j) = 2 u_j^T db_i - u_j^T dL u_i
-					// but we need d(b_i·u_j + b_j·u_i)/2 for off-diagonal
-					double dBterm_i = -(newW * newEv[i] - oldW * oldEv[i]);
-					double uTdb_ij = (ulist(ia, j) - ulist(ib, j)) * dBterm_i;
-
-					double dBterm_j = -(newW * newEv[j] - oldW * oldEv[j]);
-					double uTdb_ji = (ulist(ia, i) - ulist(ib, i)) * dBterm_j;
-
-					// 对称化: d(b_i·u_j) 需要 u_j^T db_i + (du_i)^T b_j
-					// 使用 adjoint: d(b_i·u_j) = u_j^T db_i + u_i^T db_j - u_j^T dL u_i
-					double dbu_ij = uTdb_ij + uTdb_ji - uTdLu_ij;
-
-					// 修正 = -d(b·u) = -(u_j^T db_i + u_i^T db_j - u_j^T dL u_i)
-					double contrib = -dbu_ij;
-
-					int vi;
-					if (i == j) {
-						vi = i;
-					} else {
-						if (i == 0 && j == 1) vi = 5;
-						else if (i == 0 && j == 2) vi = 4;
-						else vi = 3;
-						contrib *= 2.0;
-					}
-					correction[vi] += contrib;
-				}
-			}
-		}
-
-		// correction 现在包含 ∑_{i,j} u_j^T Δr_i (Voigt)
-		// 需要 scale: / eps 得到导数，然后符号
-		// 从 Lagrangian 推导：adjoint 修正 = p^T (dL u - db)
-		// 其中 p_i = -(1/(3As)) u_i（对 APAC）
-		// 但此处我们直接把它加到 v_sens，v_sens 表示 d(nnT-b·u)
-		// 所以修正 = d(b·u)_implicit = u^T * residual / eps
-		// 加到 v_sens：v_sens += correction / eps
-		correction /= eps;
-
-		// 还需要处理 Voigt shear 的 /2 以匹配 v_sens 格式
-		// v_sens 的 off-diagonal 已经做过 vg.tail<3>() /= 2.0
-		// 所以这里 off-diagonal 的 correction 也要 /2
-		correction.tail<3>() /= 2.0;
-
-		sens.vSens.row(k) += correction.transpose();
-
-		// 恢复顶点位置
-		mesh.set_point(vk, oldPos);
-	}
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -812,12 +651,9 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		// [1] surgery
 		if (opts.enableSurgery && iter >= opts.surgeryStartIter && iter % opts.surgeryInterval == 0 && iter > 0) {
 			if (mesh.surgery(opts.surgeryOpts)) {
-				int bndEdges = 0;
-				for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it)
-					if (mesh.is_boundary(*e_it)) ++bndEdges;
+				mesh.garbage_collection();
 				std::cout << "surgery performed at iter " << iter
-						  << " nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
-						  << " bndEdges=" << bndEdges << "\n";
+						  << " nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 				if (!opts.outputDir.empty()) {
 					mesh.saveUnitCell(opts.outputDir + "/aftsur_" + std::to_string(iter) + ".obj");
 				}
@@ -841,12 +677,6 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				if (cleaned) mesh.garbage_collection();
 			}
 			if (!opts.outputDir.empty()) {
-				int bndAfterRemesh = 0;
-				for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it)
-					if (mesh.is_boundary(*e_it)) ++bndAfterRemesh;
-				if (bndAfterRemesh > 0)
-					std::cout << "  after remesh: nv=" << mesh.n_vertices()
-							  << " nf=" << mesh.n_faces() << " bndEdges=" << bndAfterRemesh << "\n";
 				mesh.saveUnitCell(opts.outputDir + "/aftrem_" + std::to_string(iter) + ".obj");
 			}
 		}

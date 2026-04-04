@@ -278,6 +278,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 				mesh.split(eh, mid);
 			}
 			periodShift(mesh);
+			mesh.garbage_collection();
 			dbgSave("1_after_split");
 
 			// collapse（单 pass）
@@ -398,16 +399,20 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	}
 
 	// 删除度为 3 的顶点（和 minsurf delete_degree3_faces 对齐）
-	for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
-		if (mesh.status(*v_it).deleted()) continue;
-		if (mesh.valence(*v_it) == 3 && !mesh.is_boundary(*v_it)) {
-			VH neighbors[3];
-			int cnt = 0;
-			for (auto voh = mesh.cvoh_iter(*v_it); voh.is_valid() && cnt < 3; ++voh)
-				neighbors[cnt++] = mesh.to_vertex_handle(*voh);
-			if (cnt == 3) {
-				mesh.delete_vertex(*v_it, true);
-				mesh.add_face(neighbors[0], neighbors[1], neighbors[2]);
+	{
+		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+			if (mesh.status(*v_it).deleted()) continue;
+			if (mesh.valence(*v_it) == 3 && !mesh.is_boundary(*v_it)) {
+				VH neighbors[3];
+				int cnt = 0;
+				for (auto voh = mesh.cvoh_iter(*v_it); voh.is_valid() && cnt < 3; ++voh)
+					neighbors[cnt++] = mesh.to_vertex_handle(*voh);
+				if (cnt == 3) {
+					mesh.delete_vertex(*v_it, true);
+					auto fh = mesh.add_face(neighbors[0], neighbors[1], neighbors[2]);
+					if (!fh.is_valid())
+						fh = mesh.add_face(neighbors[0], neighbors[2], neighbors[1]);
+				}
 			}
 		}
 	}

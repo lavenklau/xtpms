@@ -1268,31 +1268,6 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 		}
 	}
 
-	// 输出曲率场到 OBJ（vertex color 编码 singMeasure）
-	{
-		double smax = *std::max_element(singMeasure.begin(), singMeasure.end());
-		double sclamp = std::min(smax, opts.singularityTol * 2.0); // clamp 到 2x 阈值
-		std::ofstream ofs("surgery_curvature.obj");
-		ofs << "# singularity measure, threshold=" << opts.singularityTol << " max=" << smax << "\n";
-		for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
-			auto p = this->point(*v_it);
-			double s = singMeasure[static_cast<std::size_t>((*v_it).idx())];
-			double t = std::min(s / sclamp, 1.0);
-			// blue(0) → white(threshold) → red(2x threshold)
-			double r = t, g = 1.0 - t, b = 1.0 - t;
-			if (s > opts.singularityTol) { r = 1; g = 0; b = 0; } // 超阈值显示红色
-			ofs << "v " << p[0] << " " << p[1] << " " << p[2]
-				<< " " << r << " " << g << " " << b << "\n";
-		}
-		for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
-			auto fv = this->cfv_iter(*f_it);
-			ofs << "f " << (*fv).idx()+1; ++fv;
-			ofs << " " << (*fv).idx()+1; ++fv;
-			ofs << " " << (*fv).idx()+1 << "\n";
-		}
-		std::cerr << "[surgery] saved surgery_curvature.obj (max=" << smax << ")\n";
-	}
-
 	{
 		double maxH = 0, sumH = 0; int cnt = 0;
 		for (std::size_t i = 0; i < nv; ++i) {
@@ -1555,27 +1530,11 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 			// CGAL 填洞
 			namespace PMP = CGAL::Polygon_mesh_processing;
 
-			// 输出填洞前的子网格
-			{
-				static int dbgHoleIdx = 0;
-				std::string fname = "surgery_kring_" + std::to_string(dbgHoleIdx++) + "_before.obj";
-				std::ofstream ofs(fname);
-				for (auto vi = cmesh.vertices_begin(); vi != cmesh.vertices_end(); ++vi) {
-					auto p = cmesh.point(*vi);
-					ofs << "v " << p.x() << " " << p.y() << " " << p.z() << "\n";
-				}
-				for (auto fi = cmesh.faces_begin(); fi != cmesh.faces_end(); ++fi) {
-					ofs << "f";
-					for (auto vi : cmesh.vertices_around_face(cmesh.halfedge(*fi)))
-						ofs << " " << (int)vi + 1;
-					ofs << "\n";
-				}
-				std::cerr << "[surgery] saved " << fname << " nv=" << cmesh.number_of_vertices()
-						  << " nf=" << cmesh.number_of_faces() << "\n";
-			}
-
 			std::vector<CGALMesh::Halfedge_index> borderCycles;
 			PMP::extract_boundary_cycles(cmesh, std::back_inserter(borderCycles));
+
+			// 记录填洞前的面数
+			std::size_t cmeshFacesBefore = cmesh.number_of_faces();
 
 			// 反复填洞直到只剩外边界
 			int filledCount = 0;
@@ -1613,46 +1572,22 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 			}
 			std::cerr << "[surgery] hole filled=" << filledCount << "\n";
 
-			// 输出填洞后的子网格
-			{
-				static int dbgHoleIdx2 = 0;
-				std::string fname = "surgery_kring_" + std::to_string(dbgHoleIdx2++) + "_after.obj";
-				std::ofstream ofs(fname);
-				for (auto vi = cmesh.vertices_begin(); vi != cmesh.vertices_end(); ++vi) {
-					auto p = cmesh.point(*vi);
-					ofs << "v " << p.x() << " " << p.y() << " " << p.z() << "\n";
-				}
-				for (auto fi = cmesh.faces_begin(); fi != cmesh.faces_end(); ++fi) {
-					ofs << "f";
-					for (auto vi : cmesh.vertices_around_face(cmesh.halfedge(*fi)))
-						ofs << " " << (int)vi + 1;
-					ofs << "\n";
-				}
-				std::cerr << "[surgery] saved " << fname << "\n";
-			}
-
-			// 将 CGAL submesh 的新顶点和面写回原网格
-			// 遍历 cmesh 中所有不在原始 ringFaces 中的面
+			// 将 CGAL submesh 的新面写回原网格
+			// 记录 cmesh 中原始面的数量（填洞前已有的面）
+			// 原始面 = ringFaces 中的面，用 cmesh face 的索引区分
+			std::size_t origFaceCount = cmeshFacesBefore;
 			std::set<int> patchFaceIds;
+			int addOk = 0, addFail = 0;
 			for (auto fi = cmesh.faces_begin(); fi != cmesh.faces_end(); ++fi) {
-				auto hverts = cmesh.vertices_around_face(cmesh.halfedge(*fi));
-				std::vector<CGALMesh::Vertex_index> fverts(hverts.begin(), hverts.end());
-				// 检查这个面的所有顶点是否都在 smToOm 映射中
-				bool allMapped = true;
-				for (auto sv : fverts) {
-					if (static_cast<std::size_t>(sv.idx()) >= smToOm.size() || smToOm[static_cast<std::size_t>(sv.idx())] < 0) {
-						allMapped = false; break;
-					}
-				}
-				if (allMapped) continue; // 原始面，跳过
+				// 跳过原始 k-ring 的面（它们已经在原网格中了）
+				if (static_cast<std::size_t>((*fi).idx()) < origFaceCount) continue;
 
-				// 新面：确保所有顶点都有映射
+				auto hverts = cmesh.vertices_around_face(cmesh.halfedge(*fi));
 				std::vector<int> fv;
-				for (auto sv : fverts) {
+				for (auto sv : hverts) {
 					if (static_cast<std::size_t>(sv.idx()) < smToOm.size() && smToOm[static_cast<std::size_t>(sv.idx())] >= 0) {
 						fv.push_back(smToOm[static_cast<std::size_t>(sv.idx())]);
 					} else {
-						// 新顶点
 						auto p = cmesh.point(sv);
 						VertexHandle newV = this->add_vertex(Vec3d(
 							static_cast<DefaultTriMesh::Scalar>(p.x()),
@@ -1667,9 +1602,12 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 					auto fh = this->add_face(VertexHandle(fv[0]), VertexHandle(fv[1]), VertexHandle(fv[2]));
 					if (!fh.is_valid())
 						fh = this->add_face(VertexHandle(fv[0]), VertexHandle(fv[2]), VertexHandle(fv[1]));
-					if (fh.is_valid()) patchFaceIds.insert(fh.idx());
+					if (fh.is_valid()) { patchFaceIds.insert(fh.idx()); ++addOk; }
+					else ++addFail;
 				}
 			}
+			if (addFail > 0)
+				std::cerr << "[surgery] writeback: ok=" << addOk << " FAILED=" << addFail << "\n";
 
 				// localSmoothing: bilaplacian fairing（和 minsurf 对齐）
 				// 收集补丁+邻域面（扩展一层）
@@ -1765,6 +1703,17 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 						Eigen::MatrixXd B = Eigen::MatrixXd::Zero(snv, 3);
 						Eigen::MatrixXd Beq(0, 3);
 						if (!igl::min_quad_with_fixed_solve(data, B, fixedY, Beq, subV)) break;
+						// 检查 NaN
+						if (subV.hasNaN()) {
+							std::cerr << "[surgery] bilaplacian produced NaN, reverting\n";
+							// 恢复原始坐标
+							for (int si = 0; si < snv; ++si) {
+								int omi = subVInv[static_cast<std::size_t>(si)];
+								auto sp = syncedPos.count(omi) ? syncedPos[omi] : this->point(VertexHandle(omi));
+								subV.row(si) << static_cast<double>(sp[0]), static_cast<double>(sp[1]), static_cast<double>(sp[2]);
+							}
+							break;
+						}
 					}
 
 					// 写回

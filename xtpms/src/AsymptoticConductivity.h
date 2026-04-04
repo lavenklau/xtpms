@@ -97,14 +97,6 @@ SensitivityResult computeSensitivity(
 	const VertexGeometry& geom,
 	const Eigen::MatrixX3d& ulist);
 
-// 隐式 PDE 敏感度修正：补偿 computeSensitivity 中未考虑的
-// 离散周期网格上 d(u^TLu)/dδ 项
-void addImplicitPDESensitivity(
-	PeriodicTriMesh& mesh,
-	const VertexGeometry& geom,
-	const Eigen::MatrixX3d& ulist,
-	SensitivityResult& sens);
-
 // ADC 目标函数
 struct ADCObjective {
 	double value;

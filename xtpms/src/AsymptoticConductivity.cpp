@@ -642,7 +642,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 										   static_cast<double>(hp[2])});
 		remeshOpts.targetLength = minPeriod * 0.15; // 0.3 for period=2
 		if (remeshOpts.minLength < 0)
-			remeshOpts.minLength = remeshOpts.targetLength * 0.1;
+			remeshOpts.minLength = remeshOpts.targetLength * 0.25;
 		std::cout << "fixed remesh targetLength = " << remeshOpts.targetLength
 				  << " (minPeriod=" << minPeriod << ")\n";
 	}

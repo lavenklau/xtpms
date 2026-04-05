@@ -523,7 +523,7 @@ int cmdGenerate(const std::string& input, const std::string& output,
 			static_cast<double>(mesh.halfPeriod()[1]),
 			static_cast<double>(mesh.halfPeriod()[2])});
 		ropts.targetLength = minPeriod * 0.15;
-		ropts.minLength = ropts.targetLength * 0.1;
+		ropts.minLength = ropts.targetLength * 0.25;
 		xtpms::delaunayRemesh(mesh, ropts);
 		bool hasBnd = false;
 		for (auto e = mesh.edges_begin(); e != mesh.edges_end() && !hasBnd; ++e)

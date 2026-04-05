@@ -1221,8 +1221,14 @@ void PeriodicTriMesh::splitUnitCell() {
 // saveUnitCell
 // ──────────────────────────────────────────────────────────────────────────
 
-bool PeriodicTriMesh::saveUnitCell(const std::string& filename) const {
-	// 提取 V/F 列表，对跨周期面把顶点 unwrap 到同一侧，然后写 OBJ。
+bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split) const {
+	if (split) {
+		// 复制网格，splitUnitCell 后直接写出
+		PeriodicTriMesh copy = *this;
+		copy.splitUnitCell();
+		return OpenMesh::IO::write_mesh(copy, filename);
+	}
+	// 不 split：用原始 unwrap 逻辑保存
 	const double L[3] = {
 		2.0 * static_cast<double>(halfPeriod_[0]),
 		2.0 * static_cast<double>(halfPeriod_[1]),

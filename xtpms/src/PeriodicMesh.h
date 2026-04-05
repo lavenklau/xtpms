@@ -118,8 +118,9 @@ public:
 	// 截断后网格不再是周期闭合的（有边界边在周期面上）
 	void splitUnitCell();
 
-	// 保存单元胞：在周期边界处 split 边，然后写 OBJ。
-	bool saveUnitCell(const std::string& filename) const;
+	// 保存单元胞。split=true 时先复制网格做 splitUnitCell 再保存（默认），
+	// split=false 时用原始 unwrap 逻辑保存（不修改原网格）。
+	bool saveUnitCell(const std::string& filename, bool split = true) const;
 
 	// 拓扑手术：检测颈部奇异（高曲率），删除周围面，填洞，去除孤岛。
 	// 返回 true 表示执行了手术。

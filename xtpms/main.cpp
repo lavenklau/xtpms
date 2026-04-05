@@ -123,15 +123,9 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 	return true;
 }
 
-// Save mesh: default is splitUnitCell (clean boundary), --no-split for raw saveUnitCell
 static void saveMesh(xtpms::PeriodicTriMesh& mesh,
 					 const std::string& outputFile, bool noSplit = false) {
-	if (noSplit) {
-		mesh.saveUnitCell(outputFile);
-	} else {
-		mesh.splitUnitCell();
-		OpenMesh::IO::write_mesh(mesh, outputFile);
-	}
+	mesh.saveUnitCell(outputFile, !noSplit);
 }
 
 // ──────────────────────────────────────────────────────────

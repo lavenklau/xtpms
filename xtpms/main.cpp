@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
+#include <random>
 
 #include "PeriodicMesh.h"
 #include "MarchingCubes.h"
@@ -263,35 +264,13 @@ int cmdOptimize(const std::string& input, const std::string& output,
 }
 
 // ──────────────────────────────────────────────────────────
-// Subcommand: generate
+// Marching cubes helper
 // ──────────────────────────────────────────────────────────
 
-int cmdGenerate(const std::string& type, const std::string& output,
-				const std::string& hpStr, int resolution, bool periodize, bool split) {
-	Vec3d hp = parseVec3(hpStr);
-	double Lx = 2.0*hp[0], Ly = 2.0*hp[1], Lz = 2.0*hp[2];
-
-	std::function<double(double,double,double)> levelSet;
-	if (type == "gyroid") {
-		levelSet = [Lx,Ly,Lz](double x, double y, double z) {
-			double px=2*M_PI*x/Lx, py=2*M_PI*y/Ly, pz=2*M_PI*z/Lz;
-			return sin(px)*cos(py) + sin(py)*cos(pz) + sin(pz)*cos(px);
-		};
-	} else if (type == "schwarzp" || type == "schwarz-p") {
-		levelSet = [Lx,Ly,Lz](double x, double y, double z) {
-			return cos(2*M_PI*x/Lx) + cos(2*M_PI*y/Ly) + cos(2*M_PI*z/Lz);
-		};
-	} else if (type == "diamond" || type == "schwarzd" || type == "schwarz-d") {
-		levelSet = [Lx,Ly,Lz](double x, double y, double z) {
-			double px=2*M_PI*x/Lx, py=2*M_PI*y/Ly, pz=2*M_PI*z/Lz;
-			return sin(px)*sin(py)*sin(pz) + sin(px)*cos(py)*cos(pz)
-				 + cos(px)*sin(py)*cos(pz) + cos(px)*cos(py)*sin(pz);
-		};
-	} else {
-		std::cerr << "Unknown type: " << type << " (gyroid, schwarzp, diamond)\n";
-		return 1;
-	}
-
+static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
+	const std::function<double(double,double,double)>& levelSet,
+	const Vec3d& hp, int resolution) {
+	double Lx=2.0*hp[0], Ly=2.0*hp[1], Lz=2.0*hp[2];
 	int nx=resolution, ny=resolution, nz=resolution, Np=resolution+1;
 	double dx=Lx/nx, dy=Ly/ny, dz=Lz/nz;
 	std::vector<xtpms::LevelSetNode> nodes(Np*Np*Np);
@@ -299,7 +278,6 @@ int cmdGenerate(const std::string& type, const std::string& output,
 		for (int j=0; j<=ny; ++j)
 			for (int i=0; i<=nx; ++i)
 				nodes[i+Np*(j+Np*k)] = {i*dx, j*dy, k*dz, levelSet(i*dx, j*dy, k*dz)};
-
 	xtpms::SparseVoxelCornerMap voxels;
 	for (int k=0; k<nz; ++k)
 		for (int j=0; j<ny; ++j)
@@ -311,33 +289,170 @@ int cmdGenerate(const std::string& type, const std::string& output,
 				c[6]=(i+1)+Np*((j+1)+Np*(k+1)); c[7]=i+Np*((j+1)+Np*(k+1));
 				voxels[{i,j,k}] = c;
 			}
-
 	xtpms::DefaultTriMesh src;
 	xtpms::ExtractMarchingCubesOptions mcOpts;
 	mcOpts.weldSharedEdges = true;
 	xtpms::marchingCubesExtractToTriMesh(voxels, nodes, 0.0, src, mcOpts);
+	return src;
+}
 
-	std::cout << "Generated " << type << ": nv=" << src.n_vertices()
-			  << " nf=" << src.n_faces() << "\n";
-
-	if (periodize) {
-		xtpms::PeriodicTriMesh mesh;
-		mesh.setHalfPeriod(hp);
-		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
-			mesh.add_vertex(src.point(*v));
-		for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
-			auto fv = src.cfv_iter(*f);
-			int a=(*fv).idx(); ++fv; int b=(*fv).idx(); ++fv; int c=(*fv).idx();
-			mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
-						  xtpms::PeriodicTriMesh::VertexHandle(b),
-						  xtpms::PeriodicTriMesh::VertexHandle(c));
-		}
-		mesh.mergePeriodBoundary();
-		std::cout << "Periodized: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
-		saveMesh(mesh, output, split);
-	} else {
-		OpenMesh::IO::write_mesh(src, output);
+static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, const Vec3d& hp) {
+	xtpms::PeriodicTriMesh mesh;
+	mesh.setHalfPeriod(hp);
+	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
+		mesh.add_vertex(src.point(*v));
+	for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
+		auto fv = src.cfv_iter(*f);
+		int a=(*fv).idx(); ++fv; int b=(*fv).idx(); ++fv; int c=(*fv).idx();
+		mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
+					  xtpms::PeriodicTriMesh::VertexHandle(b),
+					  xtpms::PeriodicTriMesh::VertexHandle(c));
 	}
+	mesh.mergePeriodBoundary();
+	return mesh;
+}
+
+// Built-in level set functions
+static std::function<double(double,double,double)> getBuiltinLevelSet(
+	const std::string& type, double Lx, double Ly, double Lz) {
+	if (type == "gyroid") {
+		return [Lx,Ly,Lz](double x, double y, double z) {
+			double px=2*M_PI*x/Lx, py=2*M_PI*y/Ly, pz=2*M_PI*z/Lz;
+			return sin(px)*cos(py) + sin(py)*cos(pz) + sin(pz)*cos(px);
+		};
+	} else if (type == "schwarzp" || type == "schwarz-p") {
+		return [Lx,Ly,Lz](double x, double y, double z) {
+			return cos(2*M_PI*x/Lx) + cos(2*M_PI*y/Ly) + cos(2*M_PI*z/Lz);
+		};
+	} else if (type == "diamond" || type == "schwarzd" || type == "schwarz-d") {
+		return [Lx,Ly,Lz](double x, double y, double z) {
+			double px=2*M_PI*x/Lx, py=2*M_PI*y/Ly, pz=2*M_PI*z/Lz;
+			return sin(px)*sin(py)*sin(pz) + sin(px)*cos(py)*cos(pz)
+				 + cos(px)*sin(py)*cos(pz) + cos(px)*cos(py)*sin(pz);
+		};
+	}
+	return nullptr;
+}
+
+// ──────────────────────────────────────────────────────────
+// Subcommand: sample (extract isosurface from level set)
+// ──────────────────────────────────────────────────────────
+
+int cmdSample(const std::string& expression, const std::string& output,
+			  const std::string& hpStr, int resolution, bool split, bool randomMode) {
+	Vec3d hp = parseVec3(hpStr);
+	double Lx=2.0*hp[0], Ly=2.0*hp[1], Lz=2.0*hp[2];
+
+	std::function<double(double,double,double)> levelSet;
+
+	if (randomMode) {
+		// Random triperiodic function:
+		// f = Σ c_cos[i]*cos(2π x_i/L_i) + c_sin[i]*sin(2π x_i/L_i)
+		//   + Σ c_cc[i,j]*cos*cos + c_sc[i,j]*sin*cos + c_ss[i,j]*sin*sin
+		std::random_device rd;
+		std::mt19937 gen(rd());
+		std::uniform_real_distribution<double> dist(-1.0, 1.0);
+
+		double c_cos[3], c_sin[3], c_cc[9], c_sc[9], c_ss[9];
+		for (int i = 0; i < 3; ++i) {
+			c_cos[i] = dist(gen); c_sin[i] = dist(gen);
+			for (int j = 0; j < 3; ++j) {
+				c_cc[i*3+j] = dist(gen);
+				c_sc[i*3+j] = dist(gen);
+				c_ss[i*3+j] = dist(gen);
+			}
+		}
+
+		std::cout << "Random coefficients:\n";
+		std::cout << "  cos: " << c_cos[0] << " " << c_cos[1] << " " << c_cos[2] << "\n";
+		std::cout << "  sin: " << c_sin[0] << " " << c_sin[1] << " " << c_sin[2] << "\n";
+
+		levelSet = [=](double x, double y, double z) {
+			double cx[3] = {cos(2*M_PI*x/Lx), cos(2*M_PI*y/Ly), cos(2*M_PI*z/Lz)};
+			double sx[3] = {sin(2*M_PI*x/Lx), sin(2*M_PI*y/Ly), sin(2*M_PI*z/Lz)};
+			double val = 0;
+			for (int i = 0; i < 3; ++i) {
+				val += c_cos[i]*cx[i] + c_sin[i]*sx[i];
+				for (int j = 0; j < 3; ++j)
+					val += c_cc[i*3+j]*cx[i]*cx[j] + c_sc[i*3+j]*sx[i]*cx[j] + c_ss[i*3+j]*sx[i]*sx[j];
+			}
+			return val;
+		};
+	} else {
+		// Try built-in name first
+		levelSet = getBuiltinLevelSet(expression, Lx, Ly, Lz);
+		if (!levelSet) {
+			// Parse as tinyexpr expression with variables x, y, z
+			// Pre-define pi for convenience
+			double vx=0, vy=0, vz=0;
+			double pi_val = M_PI;
+			te_variable vars[] = {
+				{"x", &vx}, {"y", &vy}, {"z", &vz}, {"pi", &pi_val},
+			};
+			int err = 0;
+			te_expr* compiled = te_compile(expression.c_str(), vars, 4, &err);
+			if (!compiled) {
+				std::cerr << "Error: cannot parse expression '" << expression
+						  << "' at position " << err << "\n";
+				return 1;
+			}
+			// Capture by value for lambda (compiled is shared_ptr-like via raw ptr)
+			levelSet = [compiled, &vx, &vy, &vz, Lx, Ly, Lz](double x, double y, double z) mutable {
+				vx = x; vy = y; vz = z;
+				return te_eval(compiled);
+			};
+			std::cout << "Expression: " << expression << "\n";
+			// Note: te_free(compiled) is leaked here for simplicity — process exits anyway
+		}
+	}
+
+	auto src = marchingCubesFromLevelSet(levelSet, hp, resolution);
+	std::cout << "Isosurface: nv=" << src.n_vertices() << " nf=" << src.n_faces() << "\n";
+
+	if (src.n_faces() == 0) {
+		std::cerr << "Warning: no isosurface found (try different expression or resolution)\n";
+		return 1;
+	}
+
+	auto mesh = periodizeMesh(src, hp);
+	std::cout << "Periodized: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
+	saveMesh(mesh, output, split);
+	std::cout << "Saved: " << output << "\n";
+	return 0;
+}
+
+// ──────────────────────────────────────────────────────────
+// Subcommand: generate (seed mesh → optimize → TPMS)
+// ──────────────────────────────────────────────────────────
+
+int cmdGenerate(const std::string& input, const std::string& output,
+				const std::string& hpStr, int maxIter, bool split) {
+	xtpms::PeriodicTriMesh mesh;
+	if (!loadPeriodicMesh(mesh, input, parseVec3(hpStr))) return 1;
+	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
+
+	// Optimize toward TPMS (maximize APAC)
+	xtpms::TailorADCOptions opts;
+	opts.objectiveType = "apac";
+	opts.maxIter = maxIter;
+	opts.maxStep = 1.0;
+	opts.mcfWeight = 0.1;
+	opts.enableRemesh = true;
+	opts.remeshOpts.adaptiveEps = 1.0;
+	opts.enableSurgery = true;
+	opts.surgeryStartIter = std::max(maxIter / 3, 10);
+	opts.surgeryInterval = 20;
+	opts.surgeryOpts.singularityTol = 50.0;
+
+	xtpms::tailorADC(mesh, opts);
+
+	auto geom = xtpms::computeVertexGeometry(mesh);
+	Eigen::MatrixX3d u;
+	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
+	std::cout << "Final APAC = " << kA.trace() / 3.0 << "\n";
+	std::cout << "kA =\n" << kA << "\n";
+
+	saveMesh(mesh, output, split);
 	std::cout << "Saved: " << output << "\n";
 	return 0;
 }
@@ -388,15 +503,26 @@ int main(int argc, char** argv) {
 	cmdO->add_flag("--split", o_split);
 	cmdO->add_option("--output-dir", o_dir, "Save intermediate meshes");
 
+	// ── sample ──
+	auto* cmdS = app.add_subcommand("sample", "Sample isosurface from level set expression");
+	std::string s_expr, s_out;
+	int s_res=20; bool s_split=false, s_random=false;
+	cmdS->add_option("-e,--expression", s_expr,
+		"Level set expression (x,y,z,pi) or built-in: gyroid|schwarzp|diamond");
+	cmdS->add_option("-o,--output", s_out, "Output OBJ")->required();
+	cmdS->add_option("--half-period", hpStr)->default_val("1,1,1");
+	cmdS->add_option("-r,--resolution", s_res)->default_val(20);
+	cmdS->add_flag("--random", s_random, "Random triperiodic function (ignore -e)");
+	cmdS->add_flag("--split", s_split);
+
 	// ── generate ──
-	auto* cmdG = app.add_subcommand("generate", "Generate TPMS mesh via marching cubes");
-	std::string g_type="gyroid", g_out;
-	int g_res=20; bool g_period=true, g_split=false;
-	cmdG->add_option("-t,--type", g_type, "gyroid|schwarzp|diamond")->default_val("gyroid");
+	auto* cmdG = app.add_subcommand("generate", "Generate TPMS from seed mesh via optimization");
+	std::string g_in, g_out;
+	int g_iter=100; bool g_split=false;
+	cmdG->add_option("-i,--input", g_in, "Seed mesh OBJ")->required();
 	cmdG->add_option("-o,--output", g_out, "Output OBJ")->required();
 	cmdG->add_option("--half-period", hpStr)->default_val("1,1,1");
-	cmdG->add_option("-r,--resolution", g_res)->default_val(20);
-	cmdG->add_flag("--no-periodize", [&](int){g_period=false;}, "Skip boundary merge");
+	cmdG->add_option("--max-iter", g_iter)->default_val(100);
 	cmdG->add_flag("--split", g_split);
 
 	CLI11_PARSE(app, argc, argv);
@@ -406,6 +532,7 @@ int main(int argc, char** argv) {
 	if (cmdO->parsed()) return cmdOptimize(o_in, o_out, hpStr, o_obj, o_iter, o_step,
 										   o_mcf, o_prec, o_surg, o_surgStart, o_surgInt,
 										   o_surgTol, o_split, o_dir);
-	if (cmdG->parsed()) return cmdGenerate(g_type, g_out, hpStr, g_res, g_period, g_split);
+	if (cmdS->parsed()) return cmdSample(s_expr, s_out, hpStr, s_res, s_split, s_random);
+	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, hpStr, g_iter, g_split);
 	return 0;
 }

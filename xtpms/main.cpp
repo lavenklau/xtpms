@@ -33,19 +33,19 @@ static Vec3d parseVec3(const std::string& s) {
 }
 
 // Load mesh and periodize.
-// If hp is zero (autoHp=true), auto-detect from bbox, clamp boundary vertices, shift to [0, 2*hp].
-// If hp is specified, use directly.
+// hpStr: "" or "auto" → auto-detect from bbox
+//        "x,y,z"      → scale mesh bbox to match specified half-period
 static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
-							 const std::string& inputFile, Vec3d hp, bool autoHp = false) {
+							 const std::string& inputFile, const std::string& hpStr) {
 	xtpms::DefaultTriMesh src;
 	if (!OpenMesh::IO::read_mesh(src, inputFile)) {
 		std::cerr << "Error: cannot read " << inputFile << "\n";
 		return false;
 	}
 
-	if (autoHp) {
-		// Detect bbox
-		Vec3d bmin, bmax;
+	// Compute bbox
+	Vec3d bmin, bmax;
+	{
 		auto v0 = src.vertices_begin();
 		bmin = bmax = src.point(*v0);
 		for (auto v = v0; v != src.vertices_end(); ++v) {
@@ -55,12 +55,46 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 				if (p[i] > bmax[i]) bmax[i] = p[i];
 			}
 		}
+	}
+
+	Vec3d hp;
+	bool specified = !hpStr.empty() && hpStr != "auto";
+	if (specified) {
+		hp = parseVec3(hpStr);
+		// Scale mesh from bbox to [0, 2*hp]
+		Vec3d bsize;
+		for (int i = 0; i < 3; ++i)
+			bsize[i] = bmax[i] - bmin[i];
+		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
+			auto p = src.point(*v);
+			for (int i = 0; i < 3; ++i) {
+				double t = (bsize[i] > 1e-15) ?
+					static_cast<double>(p[i] - bmin[i]) / static_cast<double>(bsize[i]) : 0.0;
+				p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(t * 2.0 * static_cast<double>(hp[i]));
+			}
+			src.set_point(*v, p);
+		}
+		std::cout << "Half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2]
+				  << " (mesh scaled from bbox)\n";
+	} else {
+		// Auto from bbox
 		for (int i = 0; i < 3; ++i)
 			hp[i] = (bmax[i] - bmin[i]) / static_cast<xtpms::DefaultTriMesh::Scalar>(2.0);
-
 		std::cout << "Auto half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
 
-		// Clamp boundary vertices to bbox
+		// Shift to [0, 2*hp]
+		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
+			auto p = src.point(*v);
+			for (int i = 0; i < 3; ++i) p[i] -= bmin[i];
+			src.set_point(*v, p);
+		}
+	}
+
+	// Clamp boundary vertices to domain faces
+	{
+		double L[3] = { 2.0*static_cast<double>(hp[0]),
+						2.0*static_cast<double>(hp[1]),
+						2.0*static_cast<double>(hp[2]) };
 		double tol = 0.02 * std::min({static_cast<double>(hp[0]),
 									   static_cast<double>(hp[1]),
 									   static_cast<double>(hp[2])});
@@ -69,22 +103,15 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 			auto p = src.point(*v);
 			bool changed = false;
 			for (int i = 0; i < 3; ++i) {
-				if (std::abs(static_cast<double>(p[i] - bmin[i])) < tol) {
-					p[i] = bmin[i]; changed = true;
-				} else if (std::abs(static_cast<double>(p[i] - bmax[i])) < tol) {
-					p[i] = bmax[i]; changed = true;
+				if (static_cast<double>(p[i]) < tol) {
+					p[i] = 0; changed = true;
+				} else if (std::abs(static_cast<double>(p[i]) - L[i]) < tol) {
+					p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(L[i]); changed = true;
 				}
 			}
 			if (changed) { src.set_point(*v, p); ++clamped; }
 		}
 		if (clamped > 0) std::cout << "Clamped " << clamped << " boundary vertices\n";
-
-		// Shift to [0, 2*hp]
-		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
-			auto p = src.point(*v);
-			for (int i = 0; i < 3; ++i) p[i] -= bmin[i];
-			src.set_point(*v, p);
-		}
 	}
 
 	mesh.setHalfPeriod(hp);
@@ -175,9 +202,8 @@ struct ExprObjective {
 
 int cmdPeriodize(const std::string& input, const std::string& output,
 				 const std::string& hpStr, bool split) {
-	bool autoHp = (hpStr == "auto");
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, autoHp ? Vec3d(0,0,0) : parseVec3(hpStr), autoHp)) return 1;
+	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
 	std::cout << "Periodized: nv=" << mesh.n_vertices()
 			  << " nf=" << mesh.n_faces() << "\n";
 	saveMesh(mesh, output, split);
@@ -190,9 +216,8 @@ int cmdPeriodize(const std::string& input, const std::string& output,
 // ──────────────────────────────────────────────────────────
 
 int cmdCompute(const std::string& input, const std::string& hpStr) {
-	bool autoHp = (hpStr == "auto");
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, autoHp ? Vec3d(0,0,0) : parseVec3(hpStr), autoHp)) return 1;
+	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
@@ -215,9 +240,8 @@ int cmdOptimize(const std::string& input, const std::string& output,
 				double precondStrength, bool enableSurgery,
 				int surgeryStart, int surgeryInterval, double surgeryTol,
 				bool split, const std::string& outputDir) {
-	bool autoHp = (hpStr == "auto");
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, autoHp ? Vec3d(0,0,0) : parseVec3(hpStr), autoHp)) return 1;
+	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
 	std::cout << "Input: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 
 	bool isBuiltin = (objective == "apac" || objective == "k00" ||
@@ -480,7 +504,7 @@ int cmdSample(const std::string& expression, const std::string& output,
 int cmdGenerate(const std::string& input, const std::string& output,
 				int maxIter, bool split) {
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, Vec3d(0,0,0), true)) return 1;
+	if (!loadPeriodicMesh(mesh, input, "")) return 1;
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 
 	// Optimize toward TPMS (maximize APAC)
@@ -517,21 +541,21 @@ int main(int argc, char** argv) {
 	CLI::App app{"xtpms - Computational design of triply periodic minimal surfaces"};
 	app.require_subcommand(1);
 
-	std::string hpStr = "1,1,1";
+	std::string hpStr;  // empty = auto-detect from bbox
 
 	// ── periodize ──
 	auto* cmdP = app.add_subcommand("periodize", "Merge periodic boundary of a mesh");
 	std::string pz_in, pz_out; bool pz_split = false;
 	cmdP->add_option("-i,--input", pz_in, "Input OBJ")->required();
 	cmdP->add_option("-o,--output", pz_out, "Output OBJ")->required();
-	cmdP->add_option("--half-period", hpStr, "Half-period x,y,z")->default_val("auto");
+	cmdP->add_option("--half-period", hpStr, "Half-period x,y,z");
 	cmdP->add_flag("--split", pz_split, "Split unit cell at period boundaries");
 
 	// ── compute ──
 	auto* cmdC = app.add_subcommand("compute", "Compute effective conductivity tensor");
 	std::string cp_in;
 	cmdC->add_option("-i,--input", cp_in, "Input OBJ")->required();
-	cmdC->add_option("--half-period", hpStr, "Half-period x,y,z")->default_val("auto");
+	cmdC->add_option("--half-period", hpStr, "Half-period x,y,z");
 
 	// ── optimize ──
 	auto* cmdO = app.add_subcommand("optimize", "Optimize surface conductivity");
@@ -541,7 +565,7 @@ int main(int argc, char** argv) {
 	int o_surgStart=40, o_surgInt=20; double o_surgTol=50;
 	cmdO->add_option("-i,--input", o_in, "Input OBJ")->required();
 	cmdO->add_option("-o,--output", o_out, "Output OBJ")->required();
-	cmdO->add_option("--half-period", hpStr)->default_val("auto");
+	cmdO->add_option("--half-period", hpStr);
 	cmdO->add_option("--objective", o_obj,
 		"apac|k00|k11|k22|iso or expression e.g. '(k00+k11+k22)/3'")->default_val("apac");
 	cmdO->add_option("--max-iter", o_iter)->default_val(100);
@@ -557,12 +581,12 @@ int main(int argc, char** argv) {
 
 	// ── sample ──
 	auto* cmdS = app.add_subcommand("sample", "Sample isosurface from level set expression");
-	std::string s_expr, s_out;
+	std::string s_expr, s_out, s_hpStr = "1,1,1";
 	int s_res=20; bool s_split=false, s_random=false;
 	cmdS->add_option("-e,--expression", s_expr,
 		"Level set expression (x,y,z,pi) or built-in: gyroid|schwarzp|diamond");
 	cmdS->add_option("-o,--output", s_out, "Output OBJ")->required();
-	cmdS->add_option("--half-period", hpStr, "Half-period x,y,z")->default_val("1,1,1");
+	cmdS->add_option("--half-period", s_hpStr, "Half-period x,y,z")->default_val("1,1,1");
 	cmdS->add_option("-r,--resolution", s_res)->default_val(20);
 	cmdS->add_flag("--random", s_random, "Random triperiodic function (ignore -e)");
 	cmdS->add_flag("--split", s_split);
@@ -583,7 +607,7 @@ int main(int argc, char** argv) {
 	if (cmdO->parsed()) return cmdOptimize(o_in, o_out, hpStr, o_obj, o_iter, o_step,
 										   o_mcf, o_prec, o_surg, o_surgStart, o_surgInt,
 										   o_surgTol, o_split, o_dir);
-	if (cmdS->parsed()) return cmdSample(s_expr, s_out, hpStr, s_res, s_split, s_random);
+	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_split, s_random);
 	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_iter, g_split);
 	return 0;
 }

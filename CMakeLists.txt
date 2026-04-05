@@ -6,23 +6,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ──────────────────────────────────────────────────────────
-# Dependencies (install via conda, vcpkg, or system packages)
-#
+# Dependencies
 #   conda:  conda env create -f environment.yml && conda activate xtpms
 #   vcpkg:  vcpkg install cgal openmesh eigen3 gtest libigl
 # ──────────────────────────────────────────────────────────
+include(FetchContent)
+
 find_package(Eigen3 CONFIG REQUIRED)
 find_package(CGAL CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
-find_package(libigl CONFIG REQUIRED)
 
-# OpenMesh: handle different target names across package managers
+# OpenMesh: try find_package, fallback to FetchContent
 find_package(OpenMesh CONFIG QUIET)
 if(NOT TARGET OpenMeshCore)
-    # vcpkg on Windows: manually create imported target
     if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
         set(_vp "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
-        if(EXISTS "${_vp}/lib/OpenMeshCore.lib")
+        if(WIN32 AND EXISTS "${_vp}/lib/OpenMeshCore.lib")
             add_library(OpenMeshCore SHARED IMPORTED GLOBAL)
             set_target_properties(OpenMeshCore PROPERTIES
                 IMPORTED_IMPLIB "${_vp}/lib/OpenMeshCore.lib"
@@ -36,7 +35,27 @@ if(NOT TARGET OpenMeshCore AND TARGET OpenMesh::OpenMeshCore)
     add_library(OpenMeshCore ALIAS OpenMesh::OpenMeshCore)
 endif()
 if(NOT TARGET OpenMeshCore)
-    message(FATAL_ERROR "OpenMesh not found. Install via: conda install -c conda-forge openmesh")
+    message(STATUS "OpenMesh not found, fetching via FetchContent...")
+    set(BUILD_APPS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(openmesh
+        GIT_REPOSITORY https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh.git
+        GIT_TAG        OpenMesh-8.1
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(openmesh)
+endif()
+
+# libigl: try find_package, fallback to FetchContent
+find_package(libigl CONFIG QUIET)
+if(NOT TARGET igl::core)
+    message(STATUS "libigl not found, fetching via FetchContent...")
+    set(LIBIGL_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(libigl
+        GIT_REPOSITORY https://github.com/libigl/libigl.git
+        GIT_TAG        v2.5.0
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(libigl)
 endif()
 
 # ──────────────────────────────────────────────────────────

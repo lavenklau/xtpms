@@ -3,9 +3,9 @@ channels:
   - conda-forge
 dependencies:
   - cmake>=3.16
-  - eigen
-  - cgal-cpp
-  - openmesh
-  - gtest
-  - libigl
-  - boost-cpp
+  - ninja
+  - eigen=3.4.*
+  - cgal-cpp=5.6.*
+  - boost-cpp>=1.74
+  - gtest=1.14.*
+  # OpenMesh and libigl are fetched automatically by CMake (FetchContent)

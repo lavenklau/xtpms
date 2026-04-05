@@ -74,16 +74,6 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=<path-to-vcpkg>/scripts/buildsystems/vcpkg
 cmake --build build --config Release
 ```
 
-### Run tests
-
-```bash
-cd build
-ctest -C Release --output-on-failure
-
-# Run a specific test:
-./Release/test_periodic_mesh_periodize --gtest_filter="*RevolutionSurface_K11*"
-```
-
 ## Command-Line Tool
 
 The `xtpms` CLI provides four subcommands:

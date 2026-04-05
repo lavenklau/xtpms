@@ -492,7 +492,8 @@ int cmdSample(const std::string& expression, const std::string& output,
 // ──────────────────────────────────────────────────────────
 
 int cmdGenerate(const std::string& input, const std::string& output,
-				const std::string& hpStr, int maxIter, bool noSplit) {
+				const std::string& hpStr, int maxIter, bool noSplit,
+				const std::string& outputDir = "") {
 	xtpms::PeriodicTriMesh mesh;
 	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
@@ -535,6 +536,8 @@ int cmdGenerate(const std::string& input, const std::string& output,
 	opts.surgeryStartIter = std::max(maxIter * 2 / 3, 30);
 	opts.surgeryInterval = 20;
 	opts.surgeryOpts.singularityTol = 100.0;
+	opts.outputDir = outputDir;
+	if (!outputDir.empty()) opts.saveInterval = 1;
 
 	xtpms::tailorADC(mesh, opts);
 
@@ -615,7 +618,9 @@ int main(int argc, char** argv) {
 	std::string g_hpStr;
 	cmdG->add_option("-o,--output", g_out, "Output OBJ")->required();
 	cmdG->add_option("--half-period", g_hpStr, "Target half-period (scale bbox to match)");
+	std::string g_dir;
 	cmdG->add_option("--max-iter", g_iter)->default_val(100);
+	cmdG->add_option("--output-dir", g_dir, "Save intermediate meshes");
 	cmdG->add_flag("--no-split", g_nosplit);
 
 	CLI11_PARSE(app, argc, argv);
@@ -626,6 +631,6 @@ int main(int argc, char** argv) {
 										   o_mcf, o_prec, o_surg, o_surgStart, o_surgInt,
 										   o_surgTol, o_nosplit, o_dir);
 	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random);
-	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_hpStr, g_iter, g_nosplit);
+	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_hpStr, g_iter, g_nosplit, g_dir);
 	return 0;
 }

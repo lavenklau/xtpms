@@ -492,9 +492,9 @@ int cmdSample(const std::string& expression, const std::string& output,
 // ──────────────────────────────────────────────────────────
 
 int cmdGenerate(const std::string& input, const std::string& output,
-				int maxIter, bool noSplit) {
+				const std::string& hpStr, int maxIter, bool noSplit) {
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, "")) return 1;
+	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 
 	// Pre-smoothing: MCF + remesh to improve mesh quality before optimization
@@ -622,7 +622,9 @@ int main(int argc, char** argv) {
 	std::string g_in, g_out;
 	int g_iter=100; bool g_nosplit=false;
 	cmdG->add_option("-i,--input", g_in, "Seed mesh OBJ")->required();
+	std::string g_hpStr;
 	cmdG->add_option("-o,--output", g_out, "Output OBJ")->required();
+	cmdG->add_option("--half-period", g_hpStr, "Target half-period (scale bbox to match)");
 	cmdG->add_option("--max-iter", g_iter)->default_val(100);
 	cmdG->add_flag("--no-split", g_nosplit);
 
@@ -634,6 +636,6 @@ int main(int argc, char** argv) {
 										   o_mcf, o_prec, o_surg, o_surgStart, o_surgInt,
 										   o_surgTol, o_nosplit, o_dir);
 	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random);
-	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_iter, g_nosplit);
+	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_hpStr, g_iter, g_nosplit);
 	return 0;
 }

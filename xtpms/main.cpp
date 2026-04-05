@@ -383,7 +383,8 @@ int cmdSample(const std::string& expression, const std::string& output,
 		levelSet = getBuiltinLevelSet(expression, Lx, Ly, Lz);
 		if (!levelSet) {
 			// Parse as tinyexpr expression with variables x, y, z
-			// Pre-define pi for convenience
+			// Expression assumes 2π-periodic: e.g. cos(x)+cos(y)+cos(z)
+			// Auto-scale: x_expr = 2π * x_physical / period
 			double vx=0, vy=0, vz=0;
 			double pi_val = M_PI;
 			te_variable vars[] = {
@@ -396,13 +397,13 @@ int cmdSample(const std::string& expression, const std::string& output,
 						  << "' at position " << err << "\n";
 				return 1;
 			}
-			// Capture by value for lambda (compiled is shared_ptr-like via raw ptr)
 			levelSet = [compiled, &vx, &vy, &vz, Lx, Ly, Lz](double x, double y, double z) mutable {
-				vx = x; vy = y; vz = z;
+				// Scale physical [0, L] → expression [0, 2π]
+				vx = 2*M_PI*x/Lx; vy = 2*M_PI*y/Ly; vz = 2*M_PI*z/Lz;
 				return te_eval(compiled);
 			};
-			std::cout << "Expression: " << expression << "\n";
-			// Note: te_free(compiled) is leaked here for simplicity — process exits anyway
+			std::cout << "Expression: " << expression
+					  << " (2pi-periodic, scaled to period " << Lx << "x" << Ly << "x" << Lz << ")\n";
 		}
 	}
 

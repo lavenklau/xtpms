@@ -76,19 +76,37 @@ cmake --build build --config Release
 
 ## Command-Line Tool
 
-The `xtpms` CLI provides four subcommands:
+The `xtpms` CLI provides five subcommands:
 
-### Generate a TPMS mesh
+### Sample isosurface from level set
+
+Extract a periodic surface from a level set expression. Expressions use **2π-periodic** convention — they are automatically scaled to match the physical period.
 
 ```bash
-# Gyroid with period [0, 1]^3, resolution 20
-xtpms generate -t gyroid -o gyroid.obj --half-period 0.5,0.5,0.5 -r 20
+# Built-in types
+xtpms sample -e gyroid -o gyroid.obj --half-period 0.5,0.5,0.5 -r 20
+xtpms sample -e schwarzp -o schwarzp.obj -r 24
+xtpms sample -e diamond -o diamond.obj --half-period 1,0.7,0.4
 
-# Schwarz P with rectangular unit cell
-xtpms generate -t schwarzp -o schwarzp.obj --half-period 1,0.7,0.4
+# Custom expression (2π-periodic in x, y, z)
+xtpms sample -e "cos(x)+cos(y)+cos(z)" -o schwarzp.obj
+xtpms sample -e "sin(x)*cos(y)+sin(y)*cos(z)+sin(z)*cos(x)" -o gyroid.obj
+xtpms sample -e "cos(x)+cos(y)+cos(z)+0.3*sin(2*x)*sin(y)" -o perturbed.obj
 
-# Diamond, split at period boundaries for visualization
-xtpms generate -t diamond -o diamond.obj --split
+# Random triperiodic surface
+xtpms sample --random -o random_surface.obj -r 16
+```
+
+### Generate TPMS from seed mesh
+
+Take any periodic mesh as a seed and optimize it toward a TPMS. The period is automatically detected from the bounding box, and boundary vertices are clamped to the bbox faces.
+
+```bash
+# Optimize seed mesh toward TPMS (auto-detect period)
+xtpms generate -i scaffold.obj -o tpms.obj --max-iter 100
+
+# With split output for visualization
+xtpms generate -i seed.obj -o tpms_unit_cell.obj --split
 ```
 
 ### Periodize an existing mesh
@@ -97,7 +115,7 @@ xtpms generate -t diamond -o diamond.obj --split
 # Merge periodic boundary of an OBJ mesh
 xtpms periodize -i raw_mesh.obj -o periodic.obj --half-period 1,1,1
 
-# Split the unit cell (duplicate boundary vertices) for visualization
+# Split unit cell (duplicate boundary vertices) for visualization
 xtpms periodize -i raw_mesh.obj -o unit_cell.obj --half-period 1,1,1 --split
 ```
 
@@ -119,13 +137,13 @@ xtpms compute -i periodic_mesh.obj --half-period 1,1,1
 ```bash
 # Maximize APAC (default objective)
 xtpms optimize -i mesh.obj -o optimized.obj --half-period 1,1,1 \
-    --objective apac --max-iter 100 --max-step 1.0
+    --objective apac --max-iter 100
 
 # Maximize k11 with surgery enabled
 xtpms optimize -i mesh.obj -o opt_k11.obj --half-period 1,1,1 \
     --objective k11 --surgery --surgery-start 40
 
-# Custom objective expression (e.g., minimize anisotropy)
+# Custom objective expression (kA components: k00..k22)
 xtpms optimize -i mesh.obj -o isotropic.obj --half-period 1,1,1 \
     --objective "(k00-k11)^2+(k11-k22)^2+(k00-k22)^2"
 

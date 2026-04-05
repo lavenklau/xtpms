@@ -85,6 +85,37 @@ if(MSVC)
 endif()
 
 # ──────────────────────────────────────────────────────────
+# CLI (command-line tool)
+# ──────────────────────────────────────────────────────────
+# CLI11 (header-only argument parser)
+FetchContent_Declare(cli11
+    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+    GIT_TAG        v2.4.2
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(cli11)
+
+# tinyexpr (expression parser, single file)
+FetchContent_Declare(tinyexpr
+    GIT_REPOSITORY https://github.com/codeplea/tinyexpr.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(tinyexpr)
+if(NOT tinyexpr_POPULATED)
+    FetchContent_Populate(tinyexpr)
+endif()
+add_library(tinyexpr_lib OBJECT "${tinyexpr_SOURCE_DIR}/tinyexpr.c")
+target_include_directories(tinyexpr_lib PUBLIC "${tinyexpr_SOURCE_DIR}")
+set_source_files_properties("${tinyexpr_SOURCE_DIR}/tinyexpr.c" PROPERTIES LANGUAGE C)
+
+add_executable(xtpms_cli xtpms/main.cpp)
+target_link_libraries(xtpms_cli PRIVATE xtpms_core CLI11::CLI11 tinyexpr_lib)
+if(MSVC)
+    target_compile_options(xtpms_cli PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/utf-8>)
+endif()
+
+# ──────────────────────────────────────────────────────────
 # Tests
 # ──────────────────────────────────────────────────────────
 enable_testing()

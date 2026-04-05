@@ -513,17 +513,7 @@ int cmdGenerate(const std::string& input, const std::string& output,
 				p[1] + static_cast<xtpms::DefaultTriMesh::Scalar>(step * lx[1]),
 				p[2] + static_cast<xtpms::DefaultTriMesh::Scalar>(step * lx[2])));
 		}
-		xtpms::RemeshOptions ropts;
-		ropts.outerIter = 1;
-		ropts.innerIter = 5;
-		ropts.adaptiveEps = 1.0;
-		// targetLength based on period (same as tailorADC)
-		double minPeriod = 2.0 * std::min({
-			static_cast<double>(mesh.halfPeriod()[0]),
-			static_cast<double>(mesh.halfPeriod()[1]),
-			static_cast<double>(mesh.halfPeriod()[2])});
-		ropts.targetLength = minPeriod * 0.15;
-		ropts.minLength = ropts.targetLength * 0.25;
+		auto ropts = xtpms::defaultRemeshOptions(mesh);
 		xtpms::delaunayRemesh(mesh, ropts);
 		bool hasBnd = false;
 		for (auto e = mesh.edges_begin(); e != mesh.edges_end() && !hasBnd; ++e)

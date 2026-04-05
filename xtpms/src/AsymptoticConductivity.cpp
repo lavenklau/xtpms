@@ -633,18 +633,15 @@ double ConvergenceChecker::estimateNextStep(double tmax) const {
 void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 	ConvergenceChecker conv(opts.convergeTol, opts.stepTol * opts.maxStep, opts.preconditionStrength);
 
-	// 固定 remesh 目标边长：根据周期大小估算（和 minsurf 对齐）
 	RemeshOptions remeshOpts = opts.remeshOpts;
 	if (opts.enableRemesh && remeshOpts.targetLength < 0) {
-		const Vec3d hp = mesh.halfPeriod();
-		double minPeriod = 2.0 * std::min({static_cast<double>(hp[0]),
-										   static_cast<double>(hp[1]),
-										   static_cast<double>(hp[2])});
-		remeshOpts.targetLength = minPeriod * 0.15; // 0.3 for period=2
-		if (remeshOpts.minLength < 0)
-			remeshOpts.minLength = remeshOpts.targetLength * 0.25;
+		remeshOpts = defaultRemeshOptions(mesh);
+		// 保留用户设置的非默认参数
+		if (opts.remeshOpts.outerIter != 1) remeshOpts.outerIter = opts.remeshOpts.outerIter;
+		if (opts.remeshOpts.innerIter != 5) remeshOpts.innerIter = opts.remeshOpts.innerIter;
+		if (opts.remeshOpts.adaptiveEps != 0.6) remeshOpts.adaptiveEps = opts.remeshOpts.adaptiveEps;
 		std::cout << "fixed remesh targetLength = " << remeshOpts.targetLength
-				  << " (minPeriod=" << minPeriod << ")\n";
+				  << " minLength = " << remeshOpts.minLength << "\n";
 	}
 
 	for (int iter = 0; iter < opts.maxIter; ++iter) {

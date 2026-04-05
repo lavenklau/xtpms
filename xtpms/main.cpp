@@ -426,10 +426,79 @@ int cmdSample(const std::string& expression, const std::string& output,
 // ──────────────────────────────────────────────────────────
 
 int cmdGenerate(const std::string& input, const std::string& output,
-				const std::string& hpStr, int maxIter, bool split) {
+				int maxIter, bool split) {
+	// Load raw mesh
+	xtpms::DefaultTriMesh src;
+	if (!OpenMesh::IO::read_mesh(src, input)) {
+		std::cerr << "Error: cannot read " << input << "\n";
+		return 1;
+	}
+
+	// Auto-detect half-period from bounding box
+	Vec3d bmin, bmax;
+	{
+		auto v = src.vertices_begin();
+		bmin = bmax = src.point(*v);
+		for (++v; v != src.vertices_end(); ++v) {
+			const auto& p = src.point(*v);
+			for (int i = 0; i < 3; ++i) {
+				if (p[i] < bmin[i]) bmin[i] = p[i];
+				if (p[i] > bmax[i]) bmax[i] = p[i];
+			}
+		}
+	}
+	Vec3d hp;
+	for (int i = 0; i < 3; ++i)
+		hp[i] = (bmax[i] - bmin[i]) / static_cast<xtpms::DefaultTriMesh::Scalar>(2.0);
+
+	std::cout << "Seed: nv=" << src.n_vertices() << " nf=" << src.n_faces() << "\n";
+	std::cout << "BBox: [" << bmin[0] << "," << bmin[1] << "," << bmin[2] << "] - ["
+			  << bmax[0] << "," << bmax[1] << "," << bmax[2] << "]\n";
+	std::cout << "Half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
+
+	// Clamp boundary vertices to bbox faces
+	{
+		double tol = 0.02 * std::min({static_cast<double>(hp[0]),
+									   static_cast<double>(hp[1]),
+									   static_cast<double>(hp[2])});
+		int clamped = 0;
+		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
+			auto p = src.point(*v);
+			bool changed = false;
+			for (int i = 0; i < 3; ++i) {
+				if (std::abs(static_cast<double>(p[i] - bmin[i])) < tol) {
+					p[i] = bmin[i]; changed = true;
+				} else if (std::abs(static_cast<double>(p[i] - bmax[i])) < tol) {
+					p[i] = bmax[i]; changed = true;
+				}
+			}
+			if (changed) { src.set_point(*v, p); ++clamped; }
+		}
+		std::cout << "Clamped " << clamped << " boundary vertices to bbox\n";
+	}
+
+	// Shift to [0, 2*hp] domain
+	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
+		auto p = src.point(*v);
+		for (int i = 0; i < 3; ++i)
+			p[i] -= bmin[i];
+		src.set_point(*v, p);
+	}
+
+	// Periodize
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, parseVec3(hpStr))) return 1;
-	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
+	mesh.setHalfPeriod(hp);
+	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
+		mesh.add_vertex(src.point(*v));
+	for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
+		auto fv = src.cfv_iter(*f);
+		int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+		mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
+					  xtpms::PeriodicTriMesh::VertexHandle(b),
+					  xtpms::PeriodicTriMesh::VertexHandle(c));
+	}
+	mesh.mergePeriodBoundary();
+	std::cout << "Periodized: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 
 	// Optimize toward TPMS (maximize APAC)
 	xtpms::TailorADCOptions opts;
@@ -516,12 +585,11 @@ int main(int argc, char** argv) {
 	cmdS->add_flag("--split", s_split);
 
 	// ── generate ──
-	auto* cmdG = app.add_subcommand("generate", "Generate TPMS from seed mesh via optimization");
+	auto* cmdG = app.add_subcommand("generate", "Generate TPMS from seed mesh (auto period from bbox)");
 	std::string g_in, g_out;
 	int g_iter=100; bool g_split=false;
 	cmdG->add_option("-i,--input", g_in, "Seed mesh OBJ")->required();
 	cmdG->add_option("-o,--output", g_out, "Output OBJ")->required();
-	cmdG->add_option("--half-period", hpStr)->default_val("1,1,1");
 	cmdG->add_option("--max-iter", g_iter)->default_val(100);
 	cmdG->add_flag("--split", g_split);
 
@@ -533,6 +601,6 @@ int main(int argc, char** argv) {
 										   o_mcf, o_prec, o_surg, o_surgStart, o_surgInt,
 										   o_surgTol, o_split, o_dir);
 	if (cmdS->parsed()) return cmdSample(s_expr, s_out, hpStr, s_res, s_split, s_random);
-	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, hpStr, g_iter, g_split);
+	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_iter, g_split);
 	return 0;
 }

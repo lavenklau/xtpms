@@ -57,19 +57,40 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		}
 	}
 
+	// Step 1: Clamp boundary vertices to bbox
+	{
+		double tol = 0.02 * std::min({
+			static_cast<double>(bmax[0] - bmin[0]),
+			static_cast<double>(bmax[1] - bmin[1]),
+			static_cast<double>(bmax[2] - bmin[2])}) / 2.0;
+		int clamped = 0;
+		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
+			auto p = src.point(*v);
+			bool changed = false;
+			for (int i = 0; i < 3; ++i) {
+				if (std::abs(static_cast<double>(p[i] - bmin[i])) < tol) {
+					p[i] = bmin[i]; changed = true;
+				} else if (std::abs(static_cast<double>(p[i] - bmax[i])) < tol) {
+					p[i] = bmax[i]; changed = true;
+				}
+			}
+			if (changed) { src.set_point(*v, p); ++clamped; }
+		}
+		if (clamped > 0) std::cout << "Clamped " << clamped << " boundary vertices to bbox\n";
+	}
+
+	// Step 2: Determine half-period and transform to [0, 2*hp]
 	Vec3d hp;
 	bool specified = !hpStr.empty() && hpStr != "auto";
 	if (specified) {
 		hp = parseVec3(hpStr);
-		// Scale mesh from bbox to [0, 2*hp]
-		Vec3d bsize;
-		for (int i = 0; i < 3; ++i)
-			bsize[i] = bmax[i] - bmin[i];
+		// Scale from [bmin, bmax] to [0, 2*hp]
 		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
 			auto p = src.point(*v);
 			for (int i = 0; i < 3; ++i) {
-				double t = (bsize[i] > 1e-15) ?
-					static_cast<double>(p[i] - bmin[i]) / static_cast<double>(bsize[i]) : 0.0;
+				double bsize = static_cast<double>(bmax[i] - bmin[i]);
+				double t = (bsize > 1e-15) ?
+					static_cast<double>(p[i] - bmin[i]) / bsize : 0.0;
 				p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(t * 2.0 * static_cast<double>(hp[i]));
 			}
 			src.set_point(*v, p);
@@ -77,41 +98,15 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		std::cout << "Half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2]
 				  << " (mesh scaled from bbox)\n";
 	} else {
-		// Auto from bbox
 		for (int i = 0; i < 3; ++i)
 			hp[i] = (bmax[i] - bmin[i]) / static_cast<xtpms::DefaultTriMesh::Scalar>(2.0);
-		std::cout << "Auto half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
-
 		// Shift to [0, 2*hp]
 		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
 			auto p = src.point(*v);
 			for (int i = 0; i < 3; ++i) p[i] -= bmin[i];
 			src.set_point(*v, p);
 		}
-	}
-
-	// Clamp boundary vertices to domain faces
-	{
-		double L[3] = { 2.0*static_cast<double>(hp[0]),
-						2.0*static_cast<double>(hp[1]),
-						2.0*static_cast<double>(hp[2]) };
-		double tol = 0.02 * std::min({static_cast<double>(hp[0]),
-									   static_cast<double>(hp[1]),
-									   static_cast<double>(hp[2])});
-		int clamped = 0;
-		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
-			auto p = src.point(*v);
-			bool changed = false;
-			for (int i = 0; i < 3; ++i) {
-				if (static_cast<double>(p[i]) < tol) {
-					p[i] = 0; changed = true;
-				} else if (std::abs(static_cast<double>(p[i]) - L[i]) < tol) {
-					p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(L[i]); changed = true;
-				}
-			}
-			if (changed) { src.set_point(*v, p); ++clamped; }
-		}
-		if (clamped > 0) std::cout << "Clamped " << clamped << " boundary vertices\n";
+		std::cout << "Auto half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
 	}
 
 	mesh.setHalfPeriod(hp);

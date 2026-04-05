@@ -123,13 +123,14 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 	return true;
 }
 
+// Save mesh: default is splitUnitCell (clean boundary), --no-split for raw saveUnitCell
 static void saveMesh(xtpms::PeriodicTriMesh& mesh,
-					 const std::string& outputFile, bool split) {
-	if (split) {
+					 const std::string& outputFile, bool noSplit = false) {
+	if (noSplit) {
+		mesh.saveUnitCell(outputFile);
+	} else {
 		mesh.splitUnitCell();
 		OpenMesh::IO::write_mesh(mesh, outputFile);
-	} else {
-		mesh.saveUnitCell(outputFile);
 	}
 }
 
@@ -196,12 +197,12 @@ struct ExprObjective {
 // ──────────────────────────────────────────────────────────
 
 int cmdPeriodize(const std::string& input, const std::string& output,
-				 const std::string& hpStr, bool split) {
+				 const std::string& hpStr, bool noSplit) {
 	xtpms::PeriodicTriMesh mesh;
 	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
 	std::cout << "Periodized: nv=" << mesh.n_vertices()
 			  << " nf=" << mesh.n_faces() << "\n";
-	saveMesh(mesh, output, split);
+	saveMesh(mesh, output, noSplit);
 	std::cout << "Saved: " << output << "\n";
 	return 0;
 }
@@ -234,7 +235,7 @@ int cmdOptimize(const std::string& input, const std::string& output,
 				int maxIter, double maxStep, double mcfWeight,
 				double precondStrength, bool enableSurgery,
 				int surgeryStart, int surgeryInterval, double surgeryTol,
-				bool split, const std::string& outputDir) {
+				bool noSplit, const std::string& outputDir) {
 	xtpms::PeriodicTriMesh mesh;
 	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
 	std::cout << "Input: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
@@ -328,7 +329,7 @@ int cmdOptimize(const std::string& input, const std::string& output,
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
 	std::cout << "\nFinal kA =\n" << kA << "\n";
 	std::cout << "APAC = " << kA.trace() / 3.0 << "\n";
-	saveMesh(mesh, output, split);
+	saveMesh(mesh, output, noSplit);
 	std::cout << "Saved: " << output << "\n";
 	return 0;
 }
@@ -409,7 +410,7 @@ static std::function<double(double,double,double)> getBuiltinLevelSet(
 // ──────────────────────────────────────────────────────────
 
 int cmdSample(const std::string& expression, const std::string& output,
-			  const std::string& hpStr, int resolution, bool split, bool randomMode) {
+			  const std::string& hpStr, int resolution, bool noSplit, bool randomMode) {
 	Vec3d hp = parseVec3(hpStr);
 	double Lx=2.0*hp[0], Ly=2.0*hp[1], Lz=2.0*hp[2];
 
@@ -487,7 +488,7 @@ int cmdSample(const std::string& expression, const std::string& output,
 
 	auto mesh = periodizeMesh(src, hp);
 	std::cout << "Periodized: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
-	saveMesh(mesh, output, split);
+	saveMesh(mesh, output, noSplit);
 	std::cout << "Saved: " << output << "\n";
 	return 0;
 }
@@ -497,7 +498,7 @@ int cmdSample(const std::string& expression, const std::string& output,
 // ──────────────────────────────────────────────────────────
 
 int cmdGenerate(const std::string& input, const std::string& output,
-				int maxIter, bool split) {
+				int maxIter, bool noSplit) {
 	xtpms::PeriodicTriMesh mesh;
 	if (!loadPeriodicMesh(mesh, input, "")) return 1;
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
@@ -559,7 +560,7 @@ int cmdGenerate(const std::string& input, const std::string& output,
 	std::cout << "Final APAC = " << kA.trace() / 3.0 << "\n";
 	std::cout << "kA =\n" << kA << "\n";
 
-	saveMesh(mesh, output, split);
+	saveMesh(mesh, output, noSplit);
 	std::cout << "Saved: " << output << "\n";
 	return 0;
 }
@@ -576,11 +577,11 @@ int main(int argc, char** argv) {
 
 	// ── periodize ──
 	auto* cmdP = app.add_subcommand("periodize", "Merge periodic boundary of a mesh");
-	std::string pz_in, pz_out; bool pz_split = false;
+	std::string pz_in, pz_out; bool pz_nosplit = false;
 	cmdP->add_option("-i,--input", pz_in, "Input OBJ")->required();
 	cmdP->add_option("-o,--output", pz_out, "Output OBJ")->required();
 	cmdP->add_option("--half-period", hpStr, "Half-period x,y,z");
-	cmdP->add_flag("--split", pz_split, "Split unit cell at period boundaries");
+	cmdP->add_flag("--no-split", pz_nosplit, "Skip split (use raw saveUnitCell instead)");
 
 	// ── compute ──
 	auto* cmdC = app.add_subcommand("compute", "Compute effective conductivity tensor");
@@ -592,7 +593,7 @@ int main(int argc, char** argv) {
 	auto* cmdO = app.add_subcommand("optimize", "Optimize surface conductivity");
 	std::string o_in, o_out, o_obj="apac", o_dir;
 	int o_iter=100; double o_step=1, o_mcf=0.1, o_prec=0.1;
-	bool o_surg=false, o_split=false;
+	bool o_surg=false, o_nosplit=false;
 	int o_surgStart=40, o_surgInt=20; double o_surgTol=50;
 	cmdO->add_option("-i,--input", o_in, "Input OBJ")->required();
 	cmdO->add_option("-o,--output", o_out, "Output OBJ")->required();
@@ -607,38 +608,38 @@ int main(int argc, char** argv) {
 	cmdO->add_option("--surgery-start", o_surgStart)->default_val(40);
 	cmdO->add_option("--surgery-interval", o_surgInt)->default_val(20);
 	cmdO->add_option("--surgery-tol", o_surgTol)->default_val(50);
-	cmdO->add_flag("--split", o_split);
+	cmdO->add_flag("--no-split", o_nosplit);
 	cmdO->add_option("--output-dir", o_dir, "Save intermediate meshes");
 
 	// ── sample ──
 	auto* cmdS = app.add_subcommand("sample", "Sample isosurface from level set expression");
 	std::string s_expr, s_out, s_hpStr = "1,1,1";
-	int s_res=20; bool s_split=false, s_random=false;
+	int s_res=20; bool s_nosplit=false, s_random=false;
 	cmdS->add_option("-e,--expression", s_expr,
 		"Level set expression (x,y,z,pi) or built-in: gyroid|schwarzp|diamond");
 	cmdS->add_option("-o,--output", s_out, "Output OBJ")->required();
 	cmdS->add_option("--half-period", s_hpStr, "Half-period x,y,z")->default_val("1,1,1");
 	cmdS->add_option("-r,--resolution", s_res)->default_val(20);
 	cmdS->add_flag("--random", s_random, "Random triperiodic function (ignore -e)");
-	cmdS->add_flag("--split", s_split);
+	cmdS->add_flag("--no-split", s_nosplit);
 
 	// ── generate ──
 	auto* cmdG = app.add_subcommand("generate", "Generate TPMS from seed mesh (auto period from bbox)");
 	std::string g_in, g_out;
-	int g_iter=100; bool g_split=false;
+	int g_iter=100; bool g_nosplit=false;
 	cmdG->add_option("-i,--input", g_in, "Seed mesh OBJ")->required();
 	cmdG->add_option("-o,--output", g_out, "Output OBJ")->required();
 	cmdG->add_option("--max-iter", g_iter)->default_val(100);
-	cmdG->add_flag("--split", g_split);
+	cmdG->add_flag("--no-split", g_nosplit);
 
 	CLI11_PARSE(app, argc, argv);
 
-	if (cmdP->parsed()) return cmdPeriodize(pz_in, pz_out, hpStr, pz_split);
+	if (cmdP->parsed()) return cmdPeriodize(pz_in, pz_out, hpStr, pz_nosplit);
 	if (cmdC->parsed()) return cmdCompute(cp_in, hpStr);
 	if (cmdO->parsed()) return cmdOptimize(o_in, o_out, hpStr, o_obj, o_iter, o_step,
 										   o_mcf, o_prec, o_surg, o_surgStart, o_surgInt,
-										   o_surgTol, o_split, o_dir);
-	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_split, s_random);
-	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_iter, g_split);
+										   o_surgTol, o_nosplit, o_dir);
+	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random);
+	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_iter, g_nosplit);
 	return 0;
 }

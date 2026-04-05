@@ -502,6 +502,42 @@ int cmdGenerate(const std::string& input, const std::string& output,
 	if (!loadPeriodicMesh(mesh, input, "")) return 1;
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 
+	// Pre-smoothing: MCF + remesh to improve mesh quality before optimization
+	std::cout << "Pre-smoothing...\n";
+	for (int pre = 0; pre < 5; ++pre) {
+		auto geomPre = xtpms::computeVertexGeometry(mesh);
+		double maxLx = 0;
+		for (auto v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
+			int vi = (*v).idx();
+			auto& lx = geomPre.vrings[static_cast<std::size_t>(vi)].Lx;
+			maxLx = std::max(maxLx, std::sqrt(lx[0]*lx[0]+lx[1]*lx[1]+lx[2]*lx[2]));
+			auto p = mesh.point(*v);
+			double step = 0.05;
+			mesh.set_point(*v, Vec3d(
+				p[0] + static_cast<xtpms::DefaultTriMesh::Scalar>(step * lx[0]),
+				p[1] + static_cast<xtpms::DefaultTriMesh::Scalar>(step * lx[1]),
+				p[2] + static_cast<xtpms::DefaultTriMesh::Scalar>(step * lx[2])));
+		}
+		xtpms::RemeshOptions ropts;
+		ropts.outerIter = 1;
+		ropts.innerIter = 5;
+		ropts.adaptiveEps = 1.0;
+		// targetLength based on period (same as tailorADC)
+		double minPeriod = 2.0 * std::min({
+			static_cast<double>(mesh.halfPeriod()[0]),
+			static_cast<double>(mesh.halfPeriod()[1]),
+			static_cast<double>(mesh.halfPeriod()[2])});
+		ropts.targetLength = minPeriod * 0.15;
+		ropts.minLength = ropts.targetLength * 0.1;
+		xtpms::delaunayRemesh(mesh, ropts);
+		bool hasBnd = false;
+		for (auto e = mesh.edges_begin(); e != mesh.edges_end() && !hasBnd; ++e)
+			if (mesh.is_boundary(*e)) hasBnd = true;
+		if (hasBnd) mesh.mergePeriodBoundary();
+		std::cout << "  pre " << pre << ": nv=" << mesh.n_vertices()
+				  << " nf=" << mesh.n_faces() << " maxLx=" << maxLx << "\n";
+	}
+
 	// Optimize toward TPMS (maximize APAC)
 	xtpms::TailorADCOptions opts;
 	opts.objectiveType = "apac";
@@ -511,9 +547,9 @@ int cmdGenerate(const std::string& input, const std::string& output,
 	opts.enableRemesh = true;
 	opts.remeshOpts.adaptiveEps = 1.0;
 	opts.enableSurgery = true;
-	opts.surgeryStartIter = std::max(maxIter / 3, 10);
+	opts.surgeryStartIter = std::max(maxIter * 2 / 3, 30);
 	opts.surgeryInterval = 20;
-	opts.surgeryOpts.singularityTol = 50.0;
+	opts.surgeryOpts.singularityTol = 100.0;
 
 	xtpms::tailorADC(mesh, opts);
 

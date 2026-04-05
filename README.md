@@ -84,7 +84,67 @@ ctest -C Release --output-on-failure
 ./Release/test_periodic_mesh_periodize --gtest_filter="*RevolutionSurface_K11*"
 ```
 
-## Quick Start
+## Command-Line Tool
+
+The `xtpms` CLI provides four subcommands:
+
+### Generate a TPMS mesh
+
+```bash
+# Gyroid with period [0, 1]^3, resolution 20
+xtpms generate -t gyroid -o gyroid.obj --half-period 0.5,0.5,0.5 -r 20
+
+# Schwarz P with rectangular unit cell
+xtpms generate -t schwarzp -o schwarzp.obj --half-period 1,0.7,0.4
+
+# Diamond, split at period boundaries for visualization
+xtpms generate -t diamond -o diamond.obj --split
+```
+
+### Periodize an existing mesh
+
+```bash
+# Merge periodic boundary of an OBJ mesh
+xtpms periodize -i raw_mesh.obj -o periodic.obj --half-period 1,1,1
+
+# Split the unit cell (duplicate boundary vertices) for visualization
+xtpms periodize -i raw_mesh.obj -o unit_cell.obj --half-period 1,1,1 --split
+```
+
+### Compute effective conductivity
+
+```bash
+xtpms compute -i periodic_mesh.obj --half-period 1,1,1
+# Output:
+#   kA =
+#       0.6664  0.0006  0.0008
+#       0.0006  0.6663 -0.0005
+#       0.0008 -0.0005  0.6665
+#   APAC = 0.6664
+#   eigenvalues: 0.6651 0.6669 0.6673
+```
+
+### Optimize conductivity
+
+```bash
+# Maximize APAC (default objective)
+xtpms optimize -i mesh.obj -o optimized.obj --half-period 1,1,1 \
+    --objective apac --max-iter 100 --max-step 1.0
+
+# Maximize k11 with surgery enabled
+xtpms optimize -i mesh.obj -o opt_k11.obj --half-period 1,1,1 \
+    --objective k11 --surgery --surgery-start 40
+
+# Custom objective expression (e.g., minimize anisotropy)
+xtpms optimize -i mesh.obj -o isotropic.obj --half-period 1,1,1 \
+    --objective "(k00-k11)^2+(k11-k22)^2+(k00-k22)^2"
+
+# Save intermediate meshes for animation
+xtpms optimize -i mesh.obj -o final.obj --half-period 1,1,1 \
+    --output-dir ./iterations --max-iter 50
+```
+
+## C++ API
 
 ### Optimize a TPMS surface
 

@@ -46,8 +46,18 @@ The framework is not limited to conductivity — it supports **general objective
 
 ### Prerequisites
 
-Install dependencies via [vcpkg](https://github.com/microsoft/vcpkg):
+- CMake 3.16+
+- C++17 compiler (MSVC 2019+, GCC 9+, Clang 10+)
 
+Install dependencies via **conda** (recommended) or **vcpkg**:
+
+**Option A: conda**
+```bash
+conda env create -f environment.yml
+conda activate xtpms
+```
+
+**Option B: vcpkg**
 ```bash
 vcpkg install cgal openmesh eigen3 gtest libigl
 ```
@@ -55,6 +65,11 @@ vcpkg install cgal openmesh eigen3 gtest libigl
 ### Configure and build
 
 ```bash
+# With conda (auto-detected):
+cmake -B build
+cmake --build build --config Release
+
+# With vcpkg (specify toolchain):
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release
 ```

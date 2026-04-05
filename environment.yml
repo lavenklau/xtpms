@@ -1,0 +1,11 @@
+name: xtpms
+channels:
+  - conda-forge
+dependencies:
+  - cmake>=3.16
+  - eigen
+  - cgal-cpp
+  - openmesh
+  - gtest
+  - libigl
+  - boost-cpp

@@ -28,7 +28,7 @@ inline RemeshOptions defaultRemeshOptions(const PeriodicTriMesh& mesh) {
 	RemeshOptions opts;
 	opts.targetLength = meanPeriod * 0.1;
 	opts.minLength = opts.targetLength * 0.1;
-	opts.adaptiveEps = 0.6;
+	opts.adaptiveEps = 1.0;
 	opts.outerIter = 1;
 	opts.innerIter = 5;
 	return opts;

@@ -715,7 +715,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		}
 
 		// [2] remesh
-		if (opts.enableRemesh && iter > 0) {
+		if (opts.enableRemesh) {
 			delaunayRemesh(mesh, remeshOpts);
 			bool hasBoundary = false;
 			for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end() && !hasBoundary; ++e_it) {
@@ -831,7 +831,9 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			stepVec[static_cast<std::size_t>(i)] = dn[i] * geom.vertexNormals[static_cast<std::size_t>(i)];
 			if (opts.mcfWeight > 0) {
 				Eigen::Vector3d mcf = opts.mcfWeight * geom.vrings[static_cast<std::size_t>(i)].Lx;
-				maxMcf = std::max(maxMcf, mcf.norm());
+				double mcfNorm = mcf.norm();
+				maxMcf = std::max(maxMcf, mcfNorm);
+				if (mcfNorm > 1.0) mcf *= 1.0 / mcfNorm;
 				stepVec[static_cast<std::size_t>(i)] += mcf;
 			}
 		}

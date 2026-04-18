@@ -834,9 +834,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			stepVec[static_cast<std::size_t>(i)] = dn[i] * geom.vertexNormals[static_cast<std::size_t>(i)];
 			if (opts.mcfWeight > 0) {
 				Eigen::Vector3d mcf = opts.mcfWeight * geom.vrings[static_cast<std::size_t>(i)].Lx;
-				double mcfNorm = mcf.norm();
-				maxMcf = std::max(maxMcf, mcfNorm);
-				if (mcfNorm > avgEdgeLen) mcf *= avgEdgeLen / mcfNorm;
+				maxMcf = std::max(maxMcf, mcf.norm());
 				stepVec[static_cast<std::size_t>(i)] += mcf;
 			}
 		}

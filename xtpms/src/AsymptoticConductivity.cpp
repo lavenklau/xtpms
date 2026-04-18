@@ -826,14 +826,6 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			}
 		}
 
-		if (iter == 0) {
-			std::cout << "  dfdvn: min=" << dfdvn.minCoeff() << " max=" << dfdvn.maxCoeff()
-					  << " norm=" << dfdvn.norm() << "\n";
-			std::cout << "  dn: min=" << dn.minCoeff() << " max=" << dn.maxCoeff()
-					  << " norm=" << dn.norm() << "\n";
-			std::cout << "  As=" << As << " c=" << c << "\n";
-			std::cout << "  vSens norm=" << sens.vSens.norm() << " aSens norm=" << sens.aSens.norm() << "\n";
-		}
 
 		// [10] Build per-vertex displacement: ADC gradient (normal) + mean curvature flow
 		std::vector<Eigen::Vector3d> stepVec(static_cast<std::size_t>(nv), Eigen::Vector3d::Zero());

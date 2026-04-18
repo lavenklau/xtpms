@@ -56,15 +56,19 @@ static void cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeL
 		cmesh.add_face(vmap[a], vmap[b], vmap[c]);
 	}
 
-	// Protect boundary edges (periodic boundary faces)
+	// 固定边界顶点位置 + 保护边界边
+	auto vcmap = cmesh.add_property_map<CGALMesh::Vertex_index, bool>("v:constrained", false).first;
+	for (auto v : cmesh.vertices())
+		if (CGAL::is_border(v, cmesh)) vcmap[v] = true;
+
 	PMP::isotropic_remeshing(cmesh.faces(), targetEdgeLength, cmesh,
 		CGAL::parameters::number_of_iterations(nIter)
-		.protect_constraints(true));
+		.protect_constraints(true)
+		.vertex_is_constrained_map(vcmap));
 
-	// Collect garbage to compact indices
 	cmesh.collect_garbage();
 
-	// CGAL → OpenMesh (indices are compact after collect_garbage)
+	// CGAL → OpenMesh
 	omesh.clear();
 	for (auto v : cmesh.vertices()) {
 		auto p = cmesh.point(v);
@@ -94,6 +98,37 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		std::cerr << "Error: cannot read " << inputFile << "\n";
 		return false;
 	}
+
+	// 检测输入是否已经是闭合周期网格（bnd=0）
+	{
+		bool hasBnd = false;
+		for (auto e = src.edges_begin(); e != src.edges_end(); ++e)
+			if (src.is_boundary(*e)) { hasBnd = true; break; }
+		if (!hasBnd) {
+			// 已经闭合：直接读入，不做 remesh/merge/scale
+			// 周期边界点已 merge，bbox 无法推断实际周期，必须指定 --half-period
+			if (hpStr.empty() || hpStr == "auto") {
+				std::cerr << "Error: closed periodic mesh requires --half-period\n";
+				return false;
+			}
+			Vec3d hp = parseVec3(hpStr);
+			std::cout << "Input is closed periodic mesh, skipping remesh/merge\n";
+			std::cout << "Half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
+			for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
+				mesh.add_vertex(src.point(*v));
+			for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
+				auto fv = src.cfv_iter(*f);
+				int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+				mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
+							  xtpms::PeriodicTriMesh::VertexHandle(b),
+							  xtpms::PeriodicTriMesh::VertexHandle(c));
+			}
+			mesh.setHalfPeriod(hp);
+			return true;
+		}
+	}
+
+	// 以下处理有边界（需要 remesh + merge）的输入
 
 	// Compute bbox
 	Vec3d bmin, bmax;
@@ -173,8 +208,9 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 			static_cast<double>(bmax[0] - bmin[0]),
 			static_cast<double>(bmax[1] - bmin[1]),
 			static_cast<double>(bmax[2] - bmin[2])});
-		// 放宽容差：CGAL remesh 可能把边界顶点推离最多 ~1e-3 * size
-		double tol = 1e-3 * minSize;
+		// CGAL remesh 已固定边界顶点（vertex_is_constrained_map），
+		// 容差只需覆盖浮点精度误差
+		double tol = 1e-4 * minSize;
 		int clamped = 0;
 		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
 			auto p = src.point(*v);

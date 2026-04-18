@@ -525,9 +525,9 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 	const double domMin[3] = {0.0, 0.0, 0.0};
 	const double domMax[3] = {Lx, Ly, Lz};
 
-	// 边界容差：取每轴尺寸的 1e-3 的最小值（匹配 remesh 后顶点可能偏离边界的幅度）
-	// 太紧会漏标大量被 remesh 推离边界的顶点
-	const double borderTol = std::max(1e-10, 1e-3 * std::min({Lx, Ly, Lz}));
+	// 边界容差：CGAL remesh 已固定边界顶点位置（vertex_is_constrained_map），
+	// 因此可以用较紧的容差。过宽会误标偏移顶点导致投影不精确。
+	const double borderTol = std::max(1e-10, 1e-4 * std::min({Lx, Ly, Lz}));
 
 	// ── Step 1: 标记所有边界顶点 ──
 	auto classifyVertices = [&]() {
@@ -544,30 +544,6 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 	};
 
 	auto vtag = classifyVertices();
-
-	{
-		int nBndVerts = 0, nTagged = 0, nMin = 0, nMax = 0;
-		for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
-			if (this->is_boundary(*v_it)) ++nBndVerts;
-		}
-		for (auto& [idx, bf] : vtag) {
-			++nTagged;
-			if (bf.isMinBoundary()) ++nMin;
-			if (bf.isMaxBoundary()) ++nMax;
-		}
-		std::cerr << "[merge] boundary verts=" << nBndVerts << " tagged=" << nTagged
-				  << " min=" << nMin << " max=" << nMax << "\n";
-		// 输出前几个 min 和 max 顶点的坐标
-		int dbgCnt = 0;
-		for (auto& [idx, bf] : vtag) {
-			if (dbgCnt >= 6) break;
-			const Vec3d& p = this->point(VertexHandle(idx));
-			std::cerr << "  v" << idx << " p=(" << p[0] << "," << p[1] << "," << p[2]
-					  << ") min=" << bf.isMinBoundary() << " max=" << bf.isMaxBoundary()
-					  << " flag=" << bf.getMask() << "\n";
-			++dbgCnt;
-		}
-	}
 
 	// ── Step 2: 折叠短边界边（保留 min 端） ──
 	{
@@ -654,8 +630,6 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 			splittedHE[static_cast<int>(i)].clear();
 			splittedHE[static_cast<int>(i)].push_back(he);
 		}
-		std::cerr << "[merge] projectAndSplit(" << (projectMaxToMin?"max→min":"min→max")
-				  << "): " << segments.size() << " target segments\n";
 		if (segments.empty()) return;
 
 		SegAABBTree tree(segments.begin(), segments.end());
@@ -689,12 +663,6 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 				continue;
 			}
 			++projectedCount;
-			if (projectedCount <= 3) {
-				std::cerr << "[merge]   proj v" << vidx << " translated=(" << translated[0] << "," << translated[1] << "," << translated[2]
-						  << ") closest=(" << closest.x() << "," << closest.y() << "," << closest.z()
-						  << ") dist=" << std::sqrt(sqDist) << "\n";
-			}
-
 			std::size_t primIdx = result.second->second;
 			auto& heSplits = splittedHE[static_cast<int>(primIdx)];
 
@@ -775,7 +743,7 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 			}
 			(void)matched;
 		}
-		std::cerr << "[merge]   src=" << srcCount << " projected=" << projectedCount << "\n";
+		(void)srcCount; (void)projectedCount;
 	};
 
 	// max→min 投影
@@ -787,14 +755,6 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 	projectAndSplit(false);
 	this->garbage_collection();
 	vtag = classifyVertices();
-
-	{
-		int bndE = 0;
-		for (auto e_it = this->edges_begin(); e_it != this->edges_end(); ++e_it)
-			if (this->is_boundary(*e_it)) ++bndE;
-		std::cerr << "[merge] before weld: nv=" << this->n_vertices() << " nf=" << this->n_faces()
-				  << " bnd=" << bndE << "\n";
-	}
 
 	// ── Step 4: 顶点合并（周期性去重 + 重建网格） ──
 	{
@@ -945,45 +905,6 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 			if (this->is_boundary(*e_it)) ++bndE2;
 		std::cerr << "[merge] after weld: nv=" << this->n_vertices() << " nf=" << this->n_faces()
 				  << " bnd=" << bndE2 << "\n";
-
-		// 诊断：剩余边界边按面分布（哪条轴的 min/max 面）
-		if (bndE2 > 0) {
-			const double axSize[3] = {Lx, Ly, Lz};
-			const double diagTol = 1e-4 * std::max({Lx, Ly, Lz});
-			int faceCnt[6] = {0,0,0,0,0,0}; // xMin,xMax,yMin,yMax,zMin,zMax
-			int interior = 0;
-			int orphan = 0; // 边不在任何周期面上
-			int dbgPrint = 0;
-			for (auto e_it = this->edges_begin(); e_it != this->edges_end(); ++e_it) {
-				if (!this->is_boundary(*e_it)) continue;
-				const HalfedgeHandle he = this->halfedge_handle(*e_it, 0);
-				const Vec3d& pa = this->point(this->from_vertex_handle(he));
-				const Vec3d& pb = this->point(this->to_vertex_handle(he));
-				// 取中点，看落在哪个周期面上（两端点都在同一面）
-				bool onFace[6] = {false,false,false,false,false,false};
-				for (int ax = 0; ax < 3; ++ax) {
-					double a = static_cast<double>(pa[ax]);
-					double b = static_cast<double>(pb[ax]);
-					if (std::abs(a) < diagTol && std::abs(b) < diagTol) onFace[2*ax] = true;
-					if (std::abs(a - axSize[ax]) < diagTol && std::abs(b - axSize[ax]) < diagTol) onFace[2*ax+1] = true;
-				}
-				bool any = false;
-				for (int f = 0; f < 6; ++f) if (onFace[f]) { ++faceCnt[f]; any = true; }
-				if (!any) {
-					++orphan;
-					if (dbgPrint < 8) {
-						std::cerr << "[merge]   orphan bnd edge pa=(" << pa[0] << "," << pa[1] << "," << pa[2]
-								  << ") pb=(" << pb[0] << "," << pb[1] << "," << pb[2] << ")\n";
-						++dbgPrint;
-					}
-				}
-				(void)interior;
-			}
-			std::cerr << "[merge] bnd edges on faces: xMin=" << faceCnt[0] << " xMax=" << faceCnt[1]
-					  << " yMin=" << faceCnt[2] << " yMax=" << faceCnt[3]
-					  << " zMin=" << faceCnt[4] << " zMax=" << faceCnt[5]
-					  << " orphan=" << orphan << "\n";
-		}
 	}
 }
 
@@ -1205,100 +1126,104 @@ void PeriodicTriMesh::splitUnitCell() {
 	}
 	this->garbage_collection();
 
-	// ── Phase 2: 像 saveUnitCell 一样 unwrap 面并 duplicate 边界顶点 ──
-	// 收集所有顶点（wrap 到 [0,L)）
-	const std::size_t nvOrig = this->n_vertices();
-	std::vector<std::array<double, 3>> verts(nvOrig);
-	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
-		const Vec3d& p = this->point(*v_it);
-		auto& v = verts[static_cast<std::size_t>((*v_it).idx())];
-		for (int i = 0; i < 3; ++i) {
-			double pi = static_cast<double>(p[i]);
-			while (pi < -1e-8) pi += L[i];
-			while (pi > L[i] + 1e-8) pi -= L[i];
-			v[static_cast<std::size_t>(i)] = pi;
+	// ── Phase 2: dupPeriodFaces（对齐 minsurf）──
+	// 按边展开跨周期面，复制偏移顶点，使所有面在 [0, L] 内
+	{
+		const std::size_t nv0 = this->n_vertices();
+		std::vector<std::array<double, 3>> vpos(nv0);
+		for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
+			const Vec3d& p = this->point(*v_it);
+			vpos[static_cast<std::size_t>((*v_it).idx())] = {
+				static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2])};
 		}
-	}
-
-	// 逐面 unwrap，记录需要 dup 的顶点
-	struct Face3 { int v[3]; };
-	std::vector<Face3> newFaces;
-	newFaces.reserve(this->n_faces());
-	std::vector<std::array<double, 3>> extraVerts;
-	std::vector<int> extraOrigIdx; // 额外顶点对应的原始顶点
-
-	for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
-		auto fv = this->cfv_iter(*f_it);
-		int idx[3];
-		idx[0] = (*fv).idx(); ++fv;
-		idx[1] = (*fv).idx(); ++fv;
-		idx[2] = (*fv).idx();
-
-		std::array<double, 3> p[3];
-		p[0] = verts[static_cast<std::size_t>(idx[0])];
-		for (int k = 1; k < 3; ++k) {
-			p[k] = verts[static_cast<std::size_t>(idx[k])];
-			for (int ax = 0; ax < 3; ++ax) {
-				double diff = p[k][static_cast<std::size_t>(ax)] - p[0][static_cast<std::size_t>(ax)];
-				if (diff > hp[ax]) p[k][static_cast<std::size_t>(ax)] -= L[ax];
-				else if (diff < -hp[ax]) p[k][static_cast<std::size_t>(ax)] += L[ax];
-			}
-		}
-		// shift 整个面回 [0, L)
-		for (int ax = 0; ax < 3; ++ax) {
-			double centroid = (p[0][static_cast<std::size_t>(ax)] +
-							   p[1][static_cast<std::size_t>(ax)] +
-							   p[2][static_cast<std::size_t>(ax)]) / 3.0;
-			while (centroid < 0) {
-				for (int k = 0; k < 3; ++k) p[k][static_cast<std::size_t>(ax)] += L[ax];
-				centroid += L[ax];
-			}
-			while (centroid > L[ax]) {
-				for (int k = 0; k < 3; ++k) p[k][static_cast<std::size_t>(ax)] -= L[ax];
-				centroid -= L[ax];
-			}
+		struct F3 { int v[3]; };
+		std::vector<F3> flist;
+		flist.reserve(this->n_faces());
+		for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
+			auto fv = this->cfv_iter(*f_it);
+			int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+			flist.push_back({a, b, c});
 		}
 
-		Face3 face;
-		for (int k = 0; k < 3; ++k) {
-			const auto& orig = verts[static_cast<std::size_t>(idx[k])];
-			bool moved = false;
-			for (int ax = 0; ax < 3; ++ax) {
-				if (std::abs(p[k][static_cast<std::size_t>(ax)] - orig[static_cast<std::size_t>(ax)]) > 1e-8) {
-					moved = true; break;
+		// 用位置→索引查找已有顶点
+		std::map<std::array<int,3>, int> posMap; // 量化坐标→顶点索引
+		auto quantize = [&](double x, double y, double z) -> std::array<int,3> {
+			return { static_cast<int>(std::round(x * 1e5)),
+					 static_cast<int>(std::round(y * 1e5)),
+					 static_cast<int>(std::round(z * 1e5)) };
+		};
+		for (std::size_t i = 0; i < nv0; ++i)
+			posMap[quantize(vpos[i][0], vpos[i][1], vpos[i][2])] = static_cast<int>(i);
+
+		std::vector<std::array<double, 3>> extraV;
+
+		for (auto& f : flist) {
+			double vnew[3][3];
+			for (int j = 0; j < 3; ++j)
+				for (int k = 0; k < 3; ++k)
+					vnew[j][k] = vpos[static_cast<std::size_t>(f.v[j])][static_cast<std::size_t>(k)];
+
+			bool hasPeriod = false;
+			// 按边展开（对齐 minsurf dupPeriodFaces）
+			for (int j = 0; j < 3; ++j) {
+				int j1 = (j + 1) % 3;
+				for (int k = 0; k < 3; ++k) {
+					double ej = vnew[j1][k] - vnew[j][k];
+					if (ej < -hp[k]) { vnew[j1][k] += L[k]; hasPeriod = true; }
+					else if (ej > hp[k]) { vnew[j][k] += L[k]; hasPeriod = true; }
 				}
 			}
-			if (moved) {
-				face.v[k] = static_cast<int>(nvOrig + extraVerts.size());
-				extraVerts.push_back(p[k]);
-				extraOrigIdx.push_back(idx[k]);
-			} else {
-				face.v[k] = idx[k];
+			// 整体 shift 回 [0, L]
+			for (int k = 0; k < 3; ++k) {
+				double cmax = std::max({vnew[0][k], vnew[1][k], vnew[2][k]});
+				double cmin = std::min({vnew[0][k], vnew[1][k], vnew[2][k]});
+				if (cmax > L[k] + 1e-5) {
+					vnew[0][k] -= L[k]; vnew[1][k] -= L[k]; vnew[2][k] -= L[k];
+				} else if (cmin < -1e-5) {
+					vnew[0][k] += L[k]; vnew[1][k] += L[k]; vnew[2][k] += L[k];
+				}
+			}
+
+			if (hasPeriod) {
+				for (int j = 0; j < 3; ++j) {
+					auto qk = quantize(vnew[j][0], vnew[j][1], vnew[j][2]);
+					if (posMap.count(qk)) {
+						f.v[j] = posMap[qk];
+					} else {
+						int newIdx = static_cast<int>(nv0 + extraV.size());
+						posMap[qk] = newIdx;
+						extraV.push_back({vnew[j][0], vnew[j][1], vnew[j][2]});
+						f.v[j] = newIdx;
+					}
+				}
 			}
 		}
-		newFaces.push_back(face);
-	}
 
-	// 重建网格
-	this->clear();
-	std::vector<VertexHandle> vh;
-	vh.reserve(nvOrig + extraVerts.size());
-	for (std::size_t i = 0; i < nvOrig; ++i) {
-		vh.push_back(this->add_vertex(Vec3d(
-			static_cast<DefaultTriMesh::Scalar>(verts[i][0]),
-			static_cast<DefaultTriMesh::Scalar>(verts[i][1]),
-			static_cast<DefaultTriMesh::Scalar>(verts[i][2]))));
-	}
-	for (const auto& ev : extraVerts) {
-		vh.push_back(this->add_vertex(Vec3d(
-			static_cast<DefaultTriMesh::Scalar>(ev[0]),
-			static_cast<DefaultTriMesh::Scalar>(ev[1]),
-			static_cast<DefaultTriMesh::Scalar>(ev[2]))));
-	}
-	for (const auto& f : newFaces) {
-		this->add_face(vh[static_cast<std::size_t>(f.v[0])],
-					   vh[static_cast<std::size_t>(f.v[1])],
-					   vh[static_cast<std::size_t>(f.v[2])]);
+		// 重建网格
+		this->clear();
+		std::vector<VertexHandle> vh;
+		vh.reserve(nv0 + extraV.size());
+		for (std::size_t i = 0; i < nv0; ++i)
+			vh.push_back(this->add_vertex(Vec3d(
+				static_cast<DefaultTriMesh::Scalar>(vpos[i][0]),
+				static_cast<DefaultTriMesh::Scalar>(vpos[i][1]),
+				static_cast<DefaultTriMesh::Scalar>(vpos[i][2]))));
+		for (const auto& ev : extraV)
+			vh.push_back(this->add_vertex(Vec3d(
+				static_cast<DefaultTriMesh::Scalar>(ev[0]),
+				static_cast<DefaultTriMesh::Scalar>(ev[1]),
+				static_cast<DefaultTriMesh::Scalar>(ev[2]))));
+		for (const auto& f : flist) {
+			auto fh = this->add_face(
+				vh[static_cast<std::size_t>(f.v[0])],
+				vh[static_cast<std::size_t>(f.v[1])],
+				vh[static_cast<std::size_t>(f.v[2])]);
+			if (!fh.is_valid())
+				this->add_face(
+					vh[static_cast<std::size_t>(f.v[0])],
+					vh[static_cast<std::size_t>(f.v[2])],
+					vh[static_cast<std::size_t>(f.v[1])]);
+		}
 	}
 }
 
@@ -1313,119 +1238,11 @@ bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split) cons
 		copy.splitUnitCell();
 		return OpenMesh::IO::write_mesh(copy, filename);
 	}
-	// 不 split：用原始 unwrap 逻辑保存
-	const double L[3] = {
-		2.0 * static_cast<double>(halfPeriod_[0]),
-		2.0 * static_cast<double>(halfPeriod_[1]),
-		2.0 * static_cast<double>(halfPeriod_[2])
-	};
-	const double hp[3] = {
-		static_cast<double>(halfPeriod_[0]),
-		static_cast<double>(halfPeriod_[1]),
-		static_cast<double>(halfPeriod_[2])
-	};
-
-	// 收集原始顶点（shift 到 [0, L) 域内）
-	const std::size_t nv = this->n_vertices();
-	std::vector<std::array<double, 3>> verts(nv);
-	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
-		const Vec3d& p = this->point(*v_it);
-		auto& v = verts[static_cast<std::size_t>((*v_it).idx())];
-		for (int i = 0; i < 3; ++i) {
-			double pi = static_cast<double>(p[i]);
-			// wrap 到 [0, L[i])
-			while (pi < -1e-8) pi += L[i];
-			while (pi > L[i] + 1e-8) pi -= L[i];
-			v[static_cast<std::size_t>(i)] = pi;
-		}
-	}
-
-	// 收集面，对跨周期面创建新的顶点副本
-	struct Face3 { int v[3]; };
-	std::vector<Face3> faces;
-	faces.reserve(this->n_faces());
-	std::vector<std::array<double, 3>> extraVerts; // 新增的顶点
-
-	for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
-		auto fv = this->cfv_iter(*f_it);
-		int idx[3];
-		idx[0] = (*fv).idx(); ++fv;
-		idx[1] = (*fv).idx(); ++fv;
-		idx[2] = (*fv).idx();
-
-		// 以 v0 为锚点，把 v1、v2 unwrap 到 v0 附近
-		std::array<double, 3> p[3];
-		p[0] = verts[static_cast<std::size_t>(idx[0])];
-
-		for (int k = 1; k < 3; ++k) {
-			p[k] = verts[static_cast<std::size_t>(idx[k])];
-			for (int ax = 0; ax < 3; ++ax) {
-				double diff = p[k][static_cast<std::size_t>(ax)] - p[0][static_cast<std::size_t>(ax)];
-				if (diff > hp[ax]) p[k][static_cast<std::size_t>(ax)] -= L[ax];
-				else if (diff < -hp[ax]) p[k][static_cast<std::size_t>(ax)] += L[ax];
-			}
-		}
-
-		// 将整个面 shift 回 [0, L) 域内：用重心决定偏移方向
-		for (int ax = 0; ax < 3; ++ax) {
-			double centroid = (p[0][static_cast<std::size_t>(ax)] +
-							   p[1][static_cast<std::size_t>(ax)] +
-							   p[2][static_cast<std::size_t>(ax)]) / 3.0;
-			while (centroid < 0) {
-				for (int k = 0; k < 3; ++k) p[k][static_cast<std::size_t>(ax)] += L[ax];
-				centroid += L[ax];
-			}
-			while (centroid > L[ax]) {
-				for (int k = 0; k < 3; ++k) p[k][static_cast<std::size_t>(ax)] -= L[ax];
-				centroid -= L[ax];
-			}
-		}
-
-		// 所有三个顶点都可能与原始位置不同，需要创建副本
-		Face3 face;
-		for (int k = 0; k < 3; ++k) {
-			const auto& orig = verts[static_cast<std::size_t>(idx[k])];
-			bool moved = false;
-			for (int ax = 0; ax < 3; ++ax) {
-				if (std::abs(p[k][static_cast<std::size_t>(ax)] - orig[static_cast<std::size_t>(ax)]) > 1e-8) {
-					moved = true;
-					break;
-				}
-			}
-			if (moved) {
-				face.v[k] = static_cast<int>(nv + extraVerts.size());
-				extraVerts.push_back(p[k]);
-			} else {
-				face.v[k] = idx[k];
-			}
-		}
-		faces.push_back(face);
-	}
-
-	// 写 OBJ
-	DefaultTriMesh out;
-	const std::size_t totalV = nv + extraVerts.size();
-	std::vector<VertexHandle> vh;
-	vh.reserve(totalV);
-	for (std::size_t i = 0; i < nv; ++i) {
-		vh.push_back(out.add_vertex(Vec3d(
-			static_cast<DefaultTriMesh::Scalar>(verts[i][0]),
-			static_cast<DefaultTriMesh::Scalar>(verts[i][1]),
-			static_cast<DefaultTriMesh::Scalar>(verts[i][2]))));
-	}
-	for (const auto& ev : extraVerts) {
-		vh.push_back(out.add_vertex(Vec3d(
-			static_cast<DefaultTriMesh::Scalar>(ev[0]),
-			static_cast<DefaultTriMesh::Scalar>(ev[1]),
-			static_cast<DefaultTriMesh::Scalar>(ev[2]))));
-	}
-	for (const auto& f : faces) {
-		out.add_face(vh[static_cast<std::size_t>(f.v[0])],
-					 vh[static_cast<std::size_t>(f.v[1])],
-					 vh[static_cast<std::size_t>(f.v[2])]);
-	}
-
-	return OpenMesh::IO::write_mesh(out, filename);
+	// 不 split：periodShift 后直接写出
+	// 所有顶点在 [0, L) 域内，跨周期的面保持原始连接关系
+	PeriodicTriMesh copy = *this;
+	copy.periodShift();
+	return OpenMesh::IO::write_mesh(copy, filename);
 }
 
 // ──────────────────────────────────────────────────────────────────────────

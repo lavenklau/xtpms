@@ -525,8 +525,9 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 	const double domMin[3] = {0.0, 0.0, 0.0};
 	const double domMax[3] = {Lx, Ly, Lz};
 
-	// 边界容差：取每轴尺寸的 1e-6 的最大值，至少 1e-10
-	const double borderTol = std::max(1e-10, 1e-6 * std::max({Lx, Ly, Lz}));
+	// 边界容差：取每轴尺寸的 1e-3 的最小值（匹配 remesh 后顶点可能偏离边界的幅度）
+	// 太紧会漏标大量被 remesh 推离边界的顶点
+	const double borderTol = std::max(1e-10, 1e-3 * std::min({Lx, Ly, Lz}));
 
 	// ── Step 1: 标记所有边界顶点 ──
 	auto classifyVertices = [&]() {
@@ -944,6 +945,45 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 			if (this->is_boundary(*e_it)) ++bndE2;
 		std::cerr << "[merge] after weld: nv=" << this->n_vertices() << " nf=" << this->n_faces()
 				  << " bnd=" << bndE2 << "\n";
+
+		// 诊断：剩余边界边按面分布（哪条轴的 min/max 面）
+		if (bndE2 > 0) {
+			const double axSize[3] = {Lx, Ly, Lz};
+			const double diagTol = 1e-4 * std::max({Lx, Ly, Lz});
+			int faceCnt[6] = {0,0,0,0,0,0}; // xMin,xMax,yMin,yMax,zMin,zMax
+			int interior = 0;
+			int orphan = 0; // 边不在任何周期面上
+			int dbgPrint = 0;
+			for (auto e_it = this->edges_begin(); e_it != this->edges_end(); ++e_it) {
+				if (!this->is_boundary(*e_it)) continue;
+				const HalfedgeHandle he = this->halfedge_handle(*e_it, 0);
+				const Vec3d& pa = this->point(this->from_vertex_handle(he));
+				const Vec3d& pb = this->point(this->to_vertex_handle(he));
+				// 取中点，看落在哪个周期面上（两端点都在同一面）
+				bool onFace[6] = {false,false,false,false,false,false};
+				for (int ax = 0; ax < 3; ++ax) {
+					double a = static_cast<double>(pa[ax]);
+					double b = static_cast<double>(pb[ax]);
+					if (std::abs(a) < diagTol && std::abs(b) < diagTol) onFace[2*ax] = true;
+					if (std::abs(a - axSize[ax]) < diagTol && std::abs(b - axSize[ax]) < diagTol) onFace[2*ax+1] = true;
+				}
+				bool any = false;
+				for (int f = 0; f < 6; ++f) if (onFace[f]) { ++faceCnt[f]; any = true; }
+				if (!any) {
+					++orphan;
+					if (dbgPrint < 8) {
+						std::cerr << "[merge]   orphan bnd edge pa=(" << pa[0] << "," << pa[1] << "," << pa[2]
+								  << ") pb=(" << pb[0] << "," << pb[1] << "," << pb[2] << ")\n";
+						++dbgPrint;
+					}
+				}
+				(void)interior;
+			}
+			std::cerr << "[merge] bnd edges on faces: xMin=" << faceCnt[0] << " xMax=" << faceCnt[1]
+					  << " yMin=" << faceCnt[2] << " yMax=" << faceCnt[3]
+					  << " zMin=" << faceCnt[4] << " zMax=" << faceCnt[5]
+					  << " orphan=" << orphan << "\n";
+		}
 	}
 }
 
@@ -951,6 +991,51 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 // removeNonPeriodicIslands
 // 检测并删除不贯穿周期的连通分量（和 minsurf deleteisoisland 的 BFS 方法对齐）
 // ──────────────────────────────────────────────────────────────────────────
+
+// 仅保留最大连通分量（按面数计）
+int PeriodicTriMesh::keepLargestComponent() {
+	this->request_vertex_status();
+	this->request_edge_status();
+	this->request_halfedge_status();
+	this->request_face_status();
+
+	const std::size_t nf = this->n_faces();
+	if (nf == 0) return 0;
+	std::vector<int> compId(nf, -1);
+	std::vector<int> compSize;
+	int nComp = 0;
+	for (std::size_t fi = 0; fi < nf; ++fi) {
+		if (compId[fi] >= 0) continue;
+		std::queue<int> q;
+		q.push(static_cast<int>(fi));
+		compId[fi] = nComp;
+		int sz = 0;
+		while (!q.empty()) {
+			int fid = q.front(); q.pop();
+			++sz;
+			auto fh = this->face_handle(fid);
+			for (auto fh_it = this->cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
+				auto opp = this->opposite_halfedge_handle(*fh_it);
+				if (this->is_boundary(opp)) continue;
+				int adj = this->face_handle(opp).idx();
+				if (adj >= 0 && static_cast<std::size_t>(adj) < nf && compId[static_cast<std::size_t>(adj)] < 0) {
+					compId[static_cast<std::size_t>(adj)] = nComp;
+					q.push(adj);
+				}
+			}
+		}
+		compSize.push_back(sz);
+		++nComp;
+	}
+	if (nComp <= 1) return 0;
+	int maxComp = static_cast<int>(std::max_element(compSize.begin(), compSize.end()) - compSize.begin());
+	for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
+		int cid = compId[static_cast<std::size_t>((*f_it).idx())];
+		if (cid != maxComp) this->delete_face(*f_it, true);
+	}
+	this->garbage_collection();
+	return nComp - 1;
+}
 
 int PeriodicTriMesh::removeNonPeriodicIslands() {
 	this->request_vertex_status();
@@ -1371,28 +1456,48 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 		}
 	}
 
+	double avgH = 0;
 	{
 		double maxH = 0, sumH = 0; int cnt = 0;
 		for (std::size_t i = 0; i < nv; ++i) {
 			sumH += singMeasure[i]; ++cnt;
 			maxH = std::max(maxH, singMeasure[i]);
 		}
-		std::cerr << "[surgery] maxH=" << maxH << " avgH=" << (cnt > 0 ? sumH / cnt : 0)
-				  << " threshold=" << opts.singularityTol << "\n";
+		avgH = (cnt > 0 ? sumH / cnt : 0);
+		std::cerr << "[surgery] maxH=" << maxH << " avgH=" << avgH
+				  << " tol=" << opts.singularityTol
+				  << " ratio=" << opts.singularityRatio << "\n";
 	}
 
 	// ══════════════════════════════════════════════════════════
 	// [2] 标记奇异顶点 → 收集要删除的面 → 分连通片
-	// （和 minsurf search_singular_strips 对齐）
+	// 自适应阈值：max(singularityTol, singularityRatio * avgH)
+	// 避免在整体褶皱时（avgH 接近或超过 tol）把普通高曲率顶点误判为奇异
 	// ══════════════════════════════════════════════════════════
+	const double effTol = std::max(opts.singularityTol, opts.singularityRatio * avgH);
+	std::cerr << "[surgery] effective threshold=" << effTol << "\n";
 	std::set<int> toDeleteFaceSet;
 	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
-		if (singMeasure[static_cast<std::size_t>((*v_it).idx())] > opts.singularityTol) {
+		if (singMeasure[static_cast<std::size_t>((*v_it).idx())] > effTol) {
 			for (auto vf_it = this->cvf_iter(*v_it); vf_it.is_valid(); ++vf_it)
 				toDeleteFaceSet.insert((*vf_it).idx());
 		}
 	}
 	if (toDeleteFaceSet.empty()) return false;
+
+	// 限制切除面积：如果候选删除面占比过高，说明高曲率是整体褶皱而非局部颈缩
+	{
+		const std::size_t nfTotal = this->n_faces();
+		double cutFrac = nfTotal > 0 ? (double)toDeleteFaceSet.size() / nfTotal : 0;
+		std::cerr << "[surgery] cut candidate: " << toDeleteFaceSet.size()
+				  << "/" << nfTotal << " faces (" << cutFrac * 100 << "%)\n";
+		if (cutFrac > opts.maxCutAreaFraction) {
+			std::cerr << "[surgery] aborted: cut fraction " << cutFrac
+					  << " > maxCutAreaFraction " << opts.maxCutAreaFraction
+					  << " (likely global wrinkle, not local neck)\n";
+			return false;
+		}
+	}
 
 	// ══════════════════════════════════════════════════════════
 	// [3] expand_region: 用 Laplacian 扩展删除区域使边界更光滑
@@ -1869,6 +1974,9 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 	}
 
 	this->garbage_collection();
+	// 清理：CGAL 填洞产生的 patch 顶点坐标在 unwrapped 空间中（可能超出域），
+	// shift 回 [0, 2*hp)，确保后续 classify/mergePeriodBoundary 行为正确
+	this->periodShift();
 	return true;
 }
 

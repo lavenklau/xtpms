@@ -20,20 +20,21 @@ struct RemeshOptions {
 
 // 根据周期大小生成推荐的 remesh 参数
 inline RemeshOptions defaultRemeshOptions(const PeriodicTriMesh& mesh) {
-	double minPeriod = 2.0 * std::min({
-		static_cast<double>(mesh.halfPeriod()[0]),
-		static_cast<double>(mesh.halfPeriod()[1]),
-		static_cast<double>(mesh.halfPeriod()[2])});
+	// Use geometric mean of periods to avoid over-refinement on non-uniform periods
+	double hp0 = static_cast<double>(mesh.halfPeriod()[0]);
+	double hp1 = static_cast<double>(mesh.halfPeriod()[1]);
+	double hp2 = static_cast<double>(mesh.halfPeriod()[2]);
+	double meanPeriod = 2.0 * std::cbrt(hp0 * hp1 * hp2);
 	RemeshOptions opts;
-	opts.targetLength = minPeriod * 0.15;
+	opts.targetLength = meanPeriod * 0.1;  // 对齐 minsurf（hp=1→targetLen=0.2）
 	opts.minLength = opts.targetLength * 0.25;
-	opts.adaptiveEps = 1.0;
+	opts.adaptiveEps = 0.6;  // 对齐 minsurf delaunayRemesh(..., 0.6)
 	opts.outerIter = 1;
 	opts.innerIter = 5;
 	return opts;
 }
 
 // 周期 Delaunay remesh：adjustEdgeLengths + fixDelaunay + smoothByCircumcenter
-void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts = {});
+void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts = RemeshOptions{});
 
 } // namespace xtpms

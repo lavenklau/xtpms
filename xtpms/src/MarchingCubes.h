@@ -49,13 +49,13 @@ void marchingCubesExtract(
 	double isoValue,
 	std::vector<std::array<double, 3>>& outVertices,
 	std::vector<std::array<std::size_t, 3>>& outTriangles,
-	const ExtractMarchingCubesOptions& opts = {});
+	const ExtractMarchingCubesOptions& opts = ExtractMarchingCubesOptions{});
 
 void marchingCubesExtractToTriMesh(
 	const SparseVoxelCornerMap& voxels,
 	const std::vector<LevelSetNode>& nodes,
 	double isoValue,
 	DefaultTriMesh& outMesh,
-	const ExtractMarchingCubesOptions& opts = {});
+	const ExtractMarchingCubesOptions& opts = ExtractMarchingCubesOptions{});
 
 } // namespace xtpms

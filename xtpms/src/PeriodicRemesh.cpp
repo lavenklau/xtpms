@@ -290,12 +290,30 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 				if (len < tgt * opts.collapseRatio)
 					toCollapse.push_back(*e);
 			}
+			// split 阈值（用于判断 collapse 后是否产生过长边）
+			double lmax = flatLen * opts.splitRatio;
 			int collapsed = 0;
 			for (EH eh : toCollapse) {
 				if (!eh.is_valid() || mesh.status(eh).deleted()) continue;
 				HH he = mesh.halfedge_handle(eh, 0);
 				if (!mesh.is_collapse_ok(he)) continue;
 				Vec3d mid = periodMidpoint(mesh, he);
+				double heLen = periodEdgeLength(mesh, eh);
+				// 对齐 minsurf：collapse 后不应产生超过 lmax 的邻边
+				// 如果 collapse 后保留顶点的最长邻边 > lmax，且当前边不是极短（> 5% minLen），跳过
+				{
+					VH vKeep = mesh.to_vertex_handle(he);
+					VH vRemove = mesh.from_vertex_handle(he);
+					double rmax = 0;
+					const Vec3d hp = mesh.halfPeriod();
+					for (auto voh = mesh.cvoh_iter(vKeep); voh.is_valid(); ++voh) {
+						VH nb = mesh.to_vertex_handle(*voh);
+						if (nb == vRemove) continue;
+						double d = makePeriod(mesh.point(nb) - mid, hp).norm();
+						rmax = std::max(rmax, d);
+					}
+					if (rmax > lmax && heLen > 0.05 * minLen) continue;
+				}
 				if (!shouldCollapse(mesh, he, mid)) continue;
 				VH vTo = mesh.to_vertex_handle(he);
 				mesh.collapse(he);
@@ -398,23 +416,35 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 		}
 	}
 
-	// 删除度为 3 的顶点（和 minsurf delete_degree3_faces 对齐）
+	// 删除度为 3 的顶点：改用 edge collapse（is_collapse_ok 保证流形性）
+	// 原先的"delete_vertex + add_face"没拓扑检查，会在非流形邻居配置下留洞
 	{
+		// 先收集快照，避免迭代中修改
+		std::vector<VH> deg3Verts;
 		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 			if (mesh.status(*v_it).deleted()) continue;
-			if (mesh.valence(*v_it) == 3 && !mesh.is_boundary(*v_it)) {
-				VH neighbors[3];
-				int cnt = 0;
-				for (auto voh = mesh.cvoh_iter(*v_it); voh.is_valid() && cnt < 3; ++voh)
-					neighbors[cnt++] = mesh.to_vertex_handle(*voh);
-				if (cnt == 3) {
-					mesh.delete_vertex(*v_it, true);
-					auto fh = mesh.add_face(neighbors[0], neighbors[1], neighbors[2]);
-					if (!fh.is_valid())
-						fh = mesh.add_face(neighbors[0], neighbors[2], neighbors[1]);
-				}
+			if (mesh.valence(*v_it) == 3 && !mesh.is_boundary(*v_it))
+				deg3Verts.push_back(*v_it);
+		}
+		int collapsed = 0, skipped = 0;
+		for (VH vh : deg3Verts) {
+			if (!vh.is_valid() || mesh.status(vh).deleted()) continue;
+			if (mesh.valence(vh) != 3) continue; // 可能因前面 collapse 而变化
+			// 找一条 is_collapse_ok 的邻接半边，从 vh 出发 collapse（保留对端顶点）
+			HH chosen;
+			for (auto voh = mesh.cvoh_iter(vh); voh.is_valid(); ++voh) {
+				if (mesh.is_collapse_ok(*voh)) { chosen = *voh; break; }
+			}
+			if (chosen.is_valid()) {
+				mesh.collapse(chosen);
+				++collapsed;
+			} else {
+				++skipped; // 无安全 collapse 方向，保留 deg-3 顶点
 			}
 		}
+		if (skipped > 0)
+			std::cerr << "[remesh] deg3 removal: collapsed=" << collapsed
+					  << " skipped=" << skipped << " (non-manifold neighbors)\n";
 	}
 
 	mesh.garbage_collection();

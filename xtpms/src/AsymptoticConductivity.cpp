@@ -644,17 +644,73 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				  << " minLength = " << remeshOpts.minLength << "\n";
 	}
 
+	// Sanity check helper: returns error message or empty string if OK
+	// nfLimit < 0 时不检查面数上限（用于 iter=0 接受高密度初始网格）
+	auto meshSanityCheck = [&](const char* stage, int nfLimit = 50000) -> std::string {
+		const int nv = static_cast<int>(mesh.n_vertices());
+		const int nf = static_cast<int>(mesh.n_faces());
+		if (nf == 0 || nv == 0)
+			return std::string(stage) + ": mesh is empty (nv=" + std::to_string(nv) + " nf=" + std::to_string(nf) + ")";
+		if (nfLimit > 0 && nf > nfLimit)
+			return std::string(stage) + ": mesh exploded (nf=" + std::to_string(nf) + " > " + std::to_string(nfLimit) + ")";
+		// Check for NaN vertices
+		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+			auto p = mesh.point(*v_it);
+			if (std::isnan(p[0]) || std::isnan(p[1]) || std::isnan(p[2]))
+				return std::string(stage) + ": NaN vertex detected (v" + std::to_string((*v_it).idx()) + ")";
+		}
+		// Check for excessive boundary edges (holes) — allow a few from remesh artifacts
+		int nBnd = 0;
+		for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it)
+			if (mesh.is_boundary(*e_it)) ++nBnd;
+		if (nBnd > nf / 10)
+			return std::string(stage) + ": too many boundary edges (" + std::to_string(nBnd) + "/" + std::to_string(nf) + " faces)";
+		return "";
+	};
+
+	// 保存最优迭代的网格，在优化末期网格退化时可回退到此
+	PeriodicTriMesh bestMesh;
+	double bestObjValue = -std::numeric_limits<double>::infinity();
+	bool haveBest = false;
+	auto saveBest = [&](double objVal, const Eigen::Matrix3d& kA) {
+		// 物理有效性检查：APAC=kA_trace/3 ∈ [0, 1]，每个对角元也应在 [0, 1]
+		// 超出范围通常是 sliver 三角形让 L 非 PSD 导致的数值假象，拒绝采纳
+		if (objVal <= 0 || objVal >= 1.0) return;
+		for (int i = 0; i < 3; ++i) {
+			if (kA(i, i) < -1e-6 || kA(i, i) > 1.0 + 1e-6) return;
+		}
+		if (objVal > bestObjValue) {
+			bestObjValue = objVal;
+			bestMesh = mesh;   // OpenMesh 深拷贝
+			haveBest = true;
+		}
+	};
+	auto restoreBest = [&]() {
+		if (haveBest) {
+			mesh = bestMesh;
+			std::cerr << "[tailorADC] restored best mesh (obj=" << bestObjValue << ")\n";
+		}
+	};
+
 	for (int iter = 0; iter < opts.maxIter; ++iter) {
 		// [1] surgery
 		if (opts.enableSurgery && iter >= opts.surgeryStartIter && iter % opts.surgeryInterval == 0 && iter > 0) {
 			if (mesh.surgery(opts.surgeryOpts)) {
 				mesh.garbage_collection();
 				mesh.removeNonPeriodicIslands();
+				// 严格保证单连通：避免 FEM Laplacian 零空间多维导致
+				// kA 解病态（观察到 kA 对角为负）
+				int removed = mesh.keepLargestComponent();
+				if (removed > 0)
+					std::cout << "surgery: removed " << removed << " residual component(s)\n";
 				std::cout << "surgery performed at iter " << iter
 						  << " nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 				if (!opts.outputDir.empty()) {
 					mesh.saveUnitCell(opts.outputDir + "/aftsur_" + std::to_string(iter) + ".obj");
 				}
+				// Reset convergence history after surgery (topology changed)
+				conv.objHistory.clear();
+				conv.stepHistory.clear();
 			}
 		}
 
@@ -676,6 +732,18 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			}
 		}
 
+		// [2.5] sanity check after surgery/remesh
+		// iter=0 时不检查 nf 上限，接受高密度初始 seed
+		{
+			int nfLimit = (iter == 0) ? -1 : 50000;
+			auto err = meshSanityCheck("after remesh", nfLimit);
+			if (!err.empty()) {
+				std::cerr << "tailorADC abort: " << err << " at iter " << iter << "\n";
+				restoreBest();
+				break;
+			}
+		}
+
 		// [3] save intermediate
 		if (!opts.outputDir.empty() && iter % opts.saveInterval == 0) {
 			mesh.saveUnitCell(opts.outputDir + "/iter_" + std::to_string(iter) + ".obj");
@@ -689,10 +757,21 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		Eigen::MatrixX3d ulist;
 		Eigen::Matrix3d kA = solveAsymptoticConductivity(mesh, geom, ulist);
 
+		// [5.5] check for NaN in solution
+		if (kA.hasNaN() || ulist.hasNaN()) {
+			std::cerr << "tailorADC abort: NaN in ADC solution at iter " << iter << "\n";
+			restoreBest();
+			break;
+		}
+
 		// [6] objective
 		ADCObjective obj = evaluateADCObjective(opts.objectiveType, kA);
-		if (std::isnan(obj.value)) {
-			std::cerr << "tailorADC: NaN objective at iter " << iter << "\n";
+		if (!std::isnan(obj.value) && obj.value > 0) {
+			saveBest(obj.value, kA);
+		}
+		if (std::isnan(obj.value) || obj.value <= 0) {
+			std::cerr << "tailorADC abort: invalid objective (" << obj.value << ") at iter " << iter << "\n";
+			restoreBest();
 			break;
 		}
 
@@ -714,34 +793,59 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-obj.gradient);
 
 		// [9] preconditioned descent direction
-		double c = conv.estimatePrecondition(20.0);
+		// 对齐 minsurf: c = 1/precondition_strength（之前漏了取倒数，c 偏小 100 倍，
+		// 导致 Laplacian 平滑不足 → 梯度噪声 → line search 步长坍塌）
+		double c = 1.0 / conv.estimatePrecondition(20.0);
 		auto L = assembleLaplacian(mesh, geom.cotWeights);
 		Eigen::SparseMatrix<double> G = -c * L;
 		for (int i = 0; i < nv; ++i) G.coeffRef(i, i) += geom.vertexAreas[i];
 
 		Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> precSolver(G);
+		// 对齐 minsurf: fweight = c + 1
 		double fweight = c + 1.0;
 		Eigen::VectorXd dn = -precSolver.solve(geom.vertexAreas.cwiseProduct(fweight * dfdvn).eval());
+
+		// Sanity check: clamp dn to prevent numerical explosion
+		if (dn.hasNaN() || !dn.allFinite()) {
+			std::cerr << "tailorADC abort: NaN/Inf in preconditioned gradient at iter " << iter << "\n";
+			restoreBest();
+			break;
+		}
+		// Compute average edge length once per iteration (used for dn clamping)
+		double avgEdgeLen = 0;
+		{
+			int nEdges = 0;
+			for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it) {
+				avgEdgeLen += mesh.calc_edge_length(*e_it);
+				++nEdges;
+			}
+			avgEdgeLen = (nEdges > 0) ? avgEdgeLen / nEdges : 0.1;
+			double dnMax = 2.0 * avgEdgeLen;
+			for (int i = 0; i < nv; ++i) {
+				if (std::abs(dn[i]) > dnMax) dn[i] = (dn[i] > 0 ? dnMax : -dnMax);
+			}
+		}
 
 		if (iter == 0) {
 			std::cout << "  dfdvn: min=" << dfdvn.minCoeff() << " max=" << dfdvn.maxCoeff()
 					  << " norm=" << dfdvn.norm() << "\n";
 			std::cout << "  dn: min=" << dn.minCoeff() << " max=" << dn.maxCoeff()
 					  << " norm=" << dn.norm() << "\n";
-			std::cout << "  As=" << As << " c=" << c << " fweight=" << fweight << "\n";
+			std::cout << "  As=" << As << " c=" << c << "\n";
 			std::cout << "  vSens norm=" << sens.vSens.norm() << " aSens norm=" << sens.aSens.norm() << "\n";
 		}
 
-		// [10] 构造每个顶点的位移向量：ADC 梯度（法向）+ 均曲率流
-		// mean_curvature_vector = Σ cot_e * edge_vec（Laplace-Beltrami 算子作用于坐标）
-		// 驱动曲面趋向极小曲面（H→0），加速收敛
+		// [10] Build per-vertex displacement: ADC gradient (normal) + mean curvature flow
 		std::vector<Eigen::Vector3d> stepVec(static_cast<std::size_t>(nv), Eigen::Vector3d::Zero());
+		double maxMcf = 0;
 		for (int i = 0; i < nv; ++i) {
-			// ADC 梯度部分：法向位移
 			stepVec[static_cast<std::size_t>(i)] = dn[i] * geom.vertexNormals[static_cast<std::size_t>(i)];
-			// 均曲率流部分（area regularization）
 			if (opts.mcfWeight > 0) {
-				stepVec[static_cast<std::size_t>(i)] += opts.mcfWeight * geom.vrings[static_cast<std::size_t>(i)].Lx;
+				Eigen::Vector3d mcf = opts.mcfWeight * geom.vrings[static_cast<std::size_t>(i)].Lx;
+				double mcfNorm = mcf.norm();
+				maxMcf = std::max(maxMcf, mcfNorm);
+				if (mcfNorm > avgEdgeLen) mcf *= avgEdgeLen / mcfNorm;
+				stepVec[static_cast<std::size_t>(i)] += mcf;
 			}
 		}
 
@@ -793,25 +897,33 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				Eigen::Matrix3d trialKA = solveAsymptoticConductivity(mesh, trialGeom, trialU);
 				ADCObjective trialObj = evaluateADCObjective(opts.objectiveType, trialKA);
 
-				if (trialObj.value > obj.value || ls >= 10) {
+				if (!std::isnan(trialObj.value) && trialObj.value > obj.value) {
 					// 接受此步长
 					break;
 				}
 				// 恢复并缩小步长
 				for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it)
 					mesh.set_point(*v_it, savedPos[static_cast<std::size_t>((*v_it).idx())]);
+				if (ls >= 10) break; // give up, keep original positions
 				step *= 0.7;
 			}
 		}
 
-		// 计算位移统计
-		double maxDisp = 0, maxDn = 0, maxMcf = 0;
-		for (int i = 0; i < nv; ++i) {
-			maxDn = std::max(maxDn, std::abs(dn[i]));
-			if (opts.mcfWeight > 0)
-				maxMcf = std::max(maxMcf, geom.vrings[static_cast<std::size_t>(i)].Lx.norm());
-			maxDisp = std::max(maxDisp, step * stepVec[static_cast<std::size_t>(i)].norm());
+		// [11.5] post-displacement sanity check（iter=0 不限 nf，接受高密度初始网格）
+		{
+			int nfLim = (iter == 0) ? -1 : 50000;
+			auto err = meshSanityCheck("after displacement", nfLim);
+			if (!err.empty()) {
+				std::cerr << "tailorADC abort: " << err << " at iter " << iter << "\n";
+				restoreBest();
+				break;
+			}
 		}
+
+		// Displacement statistics (maxMcf already computed in step [10])
+		double maxDisp = 0, maxDn = dn.cwiseAbs().maxCoeff();
+		for (int i = 0; i < nv; ++i)
+			maxDisp = std::max(maxDisp, step * stepVec[static_cast<std::size_t>(i)].norm());
 		std::cout << "iter=" << iter << " obj=" << obj.value
 				  << " step=" << step << " kA_trace=" << kA.trace()
 				  << " nv=" << nv << " nf=" << mesh.n_faces()

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(xtpms LANGUAGES CXX)
+project(xtpms LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,17 +45,24 @@ if(NOT TARGET OpenMeshCore)
     FetchContent_MakeAvailable(openmesh)
 endif()
 
-# libigl: try find_package, fallback to FetchContent
+# libigl: try find_package, fallback to local third_party, then FetchContent
 find_package(libigl CONFIG QUIET)
 if(NOT TARGET igl::core)
-    message(STATUS "libigl not found, fetching via FetchContent...")
-    set(LIBIGL_INSTALL OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(libigl
-        GIT_REPOSITORY https://github.com/libigl/libigl.git
-        GIT_TAG        v2.5.0
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(libigl)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/igl/cotmatrix.h")
+        message(STATUS "Using local libigl from third_party/")
+        add_library(igl_core INTERFACE)
+        add_library(igl::core ALIAS igl_core)
+        target_include_directories(igl_core INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+    else()
+        message(STATUS "libigl not found, fetching via FetchContent...")
+        set(LIBIGL_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(libigl
+            GIT_REPOSITORY https://github.com/libigl/libigl.git
+            GIT_TAG        v2.5.0
+            GIT_SHALLOW    TRUE
+        )
+        FetchContent_MakeAvailable(libigl)
+    endif()
 endif()
 
 # ──────────────────────────────────────────────────────────
@@ -82,37 +89,47 @@ add_library(xtpms_core STATIC
 target_link_libraries(xtpms_core PUBLIC xtpms_headers Eigen3::Eigen PRIVATE CGAL::CGAL igl::core)
 if(MSVC)
     target_compile_options(xtpms_core PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/bigobj>)
+else()
+    target_compile_options(xtpms_core PRIVATE -Wno-deprecated-declarations)
 endif()
 
 # ──────────────────────────────────────────────────────────
 # CLI (command-line tool)
 # ──────────────────────────────────────────────────────────
 # CLI11 (header-only argument parser)
-FetchContent_Declare(cli11
-    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-    GIT_TAG        v2.4.2
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(cli11)
+find_package(CLI11 CONFIG QUIET)
+if(NOT TARGET CLI11::CLI11)
+    FetchContent_Declare(cli11
+        GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+        GIT_TAG        v2.4.2
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(cli11)
+endif()
 
 # tinyexpr (expression parser, single file)
-FetchContent_Declare(tinyexpr
-    GIT_REPOSITORY https://github.com/codeplea/tinyexpr.git
-    GIT_TAG        master
-    GIT_SHALLOW    TRUE
-)
-FetchContent_GetProperties(tinyexpr)
-if(NOT tinyexpr_POPULATED)
-    FetchContent_Populate(tinyexpr)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyexpr.c")
+    set(tinyexpr_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+else()
+    FetchContent_Declare(tinyexpr
+        GIT_REPOSITORY https://github.com/codeplea/tinyexpr.git
+        GIT_TAG        master
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_GetProperties(tinyexpr)
+    if(NOT tinyexpr_POPULATED)
+        FetchContent_Populate(tinyexpr)
+    endif()
 endif()
 add_library(tinyexpr_lib OBJECT "${tinyexpr_SOURCE_DIR}/tinyexpr.c")
 target_include_directories(tinyexpr_lib PUBLIC "${tinyexpr_SOURCE_DIR}")
 set_source_files_properties("${tinyexpr_SOURCE_DIR}/tinyexpr.c" PROPERTIES LANGUAGE C)
 
-add_executable(xtpms_cli xtpms/main.cpp)
-target_link_libraries(xtpms_cli PRIVATE xtpms_core CLI11::CLI11 tinyexpr_lib)
+add_executable(xtpms_app xtpms/main.cpp)
+set_target_properties(xtpms_app PROPERTIES OUTPUT_NAME "xtpms")
+target_link_libraries(xtpms_app PRIVATE xtpms_core CLI11::CLI11 tinyexpr_lib)
 if(MSVC)
-    target_compile_options(xtpms_cli PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/utf-8>)
+    target_compile_options(xtpms_app PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/utf-8>)
 endif()
 
 # ──────────────────────────────────────────────────────────

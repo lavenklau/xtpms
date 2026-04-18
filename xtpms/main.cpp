@@ -11,6 +11,10 @@
 #include "PeriodicRemesh.h"
 #include "AsymptoticConductivity.h"
 
+#include <CGAL/Simple_cartesian.h>
+#include <CGAL/Surface_mesh.h>
+#include <CGAL/Polygon_mesh_processing/remesh.h>
+
 extern "C" {
 #include "tinyexpr.h"
 }
@@ -30,6 +34,54 @@ static Vec3d parseVec3(const std::string& s) {
 		static_cast<xtpms::DefaultTriMesh::Scalar>(x),
 		static_cast<xtpms::DefaultTriMesh::Scalar>(y),
 		static_cast<xtpms::DefaultTriMesh::Scalar>(z));
+}
+
+// CGAL isotropic remesh on OpenMesh (via conversion)
+static void cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeLength, int nIter = 3) {
+	using K = CGAL::Simple_cartesian<double>;
+	using CGALMesh = CGAL::Surface_mesh<K::Point_3>;
+	namespace PMP = CGAL::Polygon_mesh_processing;
+
+	// OpenMesh → CGAL
+	CGALMesh cmesh;
+	std::vector<CGALMesh::Vertex_index> vmap;
+	vmap.reserve(omesh.n_vertices());
+	for (auto v = omesh.vertices_begin(); v != omesh.vertices_end(); ++v) {
+		auto p = omesh.point(*v);
+		vmap.push_back(cmesh.add_vertex(K::Point_3(p[0], p[1], p[2])));
+	}
+	for (auto f = omesh.faces_begin(); f != omesh.faces_end(); ++f) {
+		auto fv = omesh.cfv_iter(*f);
+		int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+		cmesh.add_face(vmap[a], vmap[b], vmap[c]);
+	}
+
+	// Protect boundary edges (periodic boundary faces)
+	PMP::isotropic_remeshing(cmesh.faces(), targetEdgeLength, cmesh,
+		CGAL::parameters::number_of_iterations(nIter)
+		.protect_constraints(true));
+
+	// Collect garbage to compact indices
+	cmesh.collect_garbage();
+
+	// CGAL → OpenMesh (indices are compact after collect_garbage)
+	omesh.clear();
+	for (auto v : cmesh.vertices()) {
+		auto p = cmesh.point(v);
+		omesh.add_vertex(xtpms::DefaultTriMesh::Point(
+			static_cast<xtpms::DefaultTriMesh::Scalar>(p.x()),
+			static_cast<xtpms::DefaultTriMesh::Scalar>(p.y()),
+			static_cast<xtpms::DefaultTriMesh::Scalar>(p.z())));
+	}
+	for (auto f : cmesh.faces()) {
+		std::vector<xtpms::DefaultTriMesh::VertexHandle> fverts;
+		for (auto v : cmesh.vertices_around_face(cmesh.halfedge(f)))
+			fverts.push_back(xtpms::DefaultTriMesh::VertexHandle(static_cast<int>(v)));
+		if (fverts.size() == 3)
+			omesh.add_face(fverts[0], fverts[1], fverts[2]);
+	}
+	std::cout << "CGAL isotropic remesh: nv=" << omesh.n_vertices()
+			  << " nf=" << omesh.n_faces() << " targetLen=" << targetEdgeLength << "\n";
 }
 
 // Load mesh and periodize.
@@ -58,11 +110,13 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 	}
 
 	// Step 1: Clamp boundary vertices to bbox
+	// Use tight tolerance: only snap vertices that are very close to bbox
+	// (saveUnitCell produces vertices at exact boundary positions)
 	{
-		double tol = 0.02 * std::min({
+		double tol = 1e-4 * std::min({
 			static_cast<double>(bmax[0] - bmin[0]),
 			static_cast<double>(bmax[1] - bmin[1]),
-			static_cast<double>(bmax[2] - bmin[2])}) / 2.0;
+			static_cast<double>(bmax[2] - bmin[2])});
 		int clamped = 0;
 		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
 			auto p = src.point(*v);
@@ -79,47 +133,110 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		if (clamped > 0) std::cout << "Clamped " << clamped << " boundary vertices to bbox\n";
 	}
 
-	// Step 2: Determine half-period and transform to [0, 2*hp]
+	// Step 2: Determine target half-period (scale deferred to after merge)
 	Vec3d hp;
 	bool specified = !hpStr.empty() && hpStr != "auto";
 	if (specified) {
 		hp = parseVec3(hpStr);
-		// Scale from [bmin, bmax] to [0, 2*hp]
-		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
-			auto p = src.point(*v);
-			for (int i = 0; i < 3; ++i) {
-				double bsize = static_cast<double>(bmax[i] - bmin[i]);
-				double t = (bsize > 1e-15) ?
-					static_cast<double>(p[i] - bmin[i]) / bsize : 0.0;
-				p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(t * 2.0 * static_cast<double>(hp[i]));
-			}
-			src.set_point(*v, p);
-		}
-		std::cout << "Half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2]
-				  << " (mesh scaled from bbox)\n";
+		std::cout << "Target half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
 	} else {
 		for (int i = 0; i < 3; ++i)
 			hp[i] = (bmax[i] - bmin[i]) / static_cast<xtpms::DefaultTriMesh::Scalar>(2.0);
-		// Shift to [0, 2*hp]
-		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
-			auto p = src.point(*v);
-			for (int i = 0; i < 3; ++i) p[i] -= bmin[i];
-			src.set_point(*v, p);
-		}
 		std::cout << "Auto half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
 	}
-
-	mesh.setHalfPeriod(hp);
-	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
-		mesh.add_vertex(src.point(*v));
-	for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
-		auto fv = src.cfv_iter(*f);
-		int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
-		mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
-					  xtpms::PeriodicTriMesh::VertexHandle(b),
-					  xtpms::PeriodicTriMesh::VertexHandle(c));
+	// Shift src to [bmin, bmax] → [0, bbox_size] (original proportions)
+	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
+		auto p = src.point(*v);
+		for (int i = 0; i < 3; ++i) p[i] -= bmin[i];
+		src.set_point(*v, p);
 	}
-	mesh.mergePeriodBoundary();
+
+	// Step 3: CGAL isotropic remesh in original bbox coordinates
+	// 用 seed 的平均边长，但加 0.02 下限避免过细 seed 让 CGAL 爆炸细分
+	{
+		double sumLen = 0;
+		int nEdges = 0;
+		for (auto e = src.edges_begin(); e != src.edges_end(); ++e) {
+			sumLen += src.calc_edge_length(*e);
+			++nEdges;
+		}
+		double avgLen = (nEdges > 0) ? sumLen / nEdges : 0.1;
+		double targetLen = std::max(avgLen, 0.02);
+		std::cout << "CGAL remesh targetLen=" << targetLen
+				  << " (avgLen=" << avgLen << " floor=0.02)\n";
+		cgalIsotropicRemesh(src, targetLen, 3);
+	}
+
+	// Step 4: Re-clamp boundary vertices after remesh (domain is [0, bbox_size])
+	{
+		double minSize = std::min({
+			static_cast<double>(bmax[0] - bmin[0]),
+			static_cast<double>(bmax[1] - bmin[1]),
+			static_cast<double>(bmax[2] - bmin[2])});
+		// 放宽容差：CGAL remesh 可能把边界顶点推离最多 ~1e-3 * size
+		double tol = 1e-3 * minSize;
+		int clamped = 0;
+		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
+			auto p = src.point(*v);
+			bool changed = false;
+			for (int i = 0; i < 3; ++i) {
+				double hi = static_cast<double>(bmax[i] - bmin[i]);
+				if (std::abs(static_cast<double>(p[i])) < tol) {
+					p[i] = 0; changed = true;
+				} else if (std::abs(static_cast<double>(p[i]) - hi) < tol) {
+					p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(hi);
+					changed = true;
+				}
+			}
+			if (changed) { src.set_point(*v, p); ++clamped; }
+		}
+		if (clamped > 0) std::cout << "Re-clamped " << clamped << " boundary vertices after remesh\n";
+	}
+
+	// Step 5: Build PeriodicTriMesh with bbox half-period, then merge
+	{
+		Vec3d bboxHp;
+		for (int i = 0; i < 3; ++i)
+			bboxHp[i] = (bmax[i] - bmin[i]) / static_cast<xtpms::DefaultTriMesh::Scalar>(2.0);
+		mesh.setHalfPeriod(bboxHp);
+		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
+			mesh.add_vertex(src.point(*v));
+		for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
+			auto fv = src.cfv_iter(*f);
+			int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+			mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
+						  xtpms::PeriodicTriMesh::VertexHandle(b),
+						  xtpms::PeriodicTriMesh::VertexHandle(c));
+		}
+		bool hasBoundary = false;
+		for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e)
+			if (mesh.is_boundary(*e)) { hasBoundary = true; break; }
+		if (hasBoundary) {
+			mesh.mergePeriodBoundary();
+		} else {
+			std::cout << "Mesh already closed, skipping merge\n";
+		}
+	}
+
+	// Step 6: Scale from [0, bbox_size] to [0, 2*hp]
+	{
+		Vec3d targetHp = specified ? hp : Vec3d(
+			(bmax[0]-bmin[0])/static_cast<xtpms::DefaultTriMesh::Scalar>(2.0),
+			(bmax[1]-bmin[1])/static_cast<xtpms::DefaultTriMesh::Scalar>(2.0),
+			(bmax[2]-bmin[2])/static_cast<xtpms::DefaultTriMesh::Scalar>(2.0));
+		if (specified) {
+			for (auto v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
+				auto p = mesh.point(*v);
+				for (int i = 0; i < 3; ++i) {
+					double bsize = static_cast<double>(bmax[i] - bmin[i]);
+					double t = (bsize > 1e-15) ? static_cast<double>(p[i]) / bsize : 0.0;
+					p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(t * 2.0 * static_cast<double>(hp[i]));
+				}
+				mesh.set_point(*v, p);
+			}
+		}
+		mesh.setHalfPeriod(targetHp);
+	}
 	return true;
 }
 
@@ -245,7 +362,7 @@ int cmdOptimize(const std::string& input, const std::string& output,
 		opts.mcfWeight = mcfWeight;
 		opts.preconditionStrength = precondStrength;
 		opts.enableRemesh = true;
-		opts.remeshOpts.adaptiveEps = 1.0;
+		opts.remeshOpts.adaptiveEps = 0.6;
 		opts.enableSurgery = enableSurgery;
 		opts.surgeryStartIter = surgeryStart;
 		opts.surgeryInterval = surgeryInterval;
@@ -261,7 +378,7 @@ int cmdOptimize(const std::string& input, const std::string& output,
 		std::cout << "Custom objective: " << objective << "\n";
 
 		xtpms::RemeshOptions remeshOpts;
-		remeshOpts.adaptiveEps = 1.0;
+		remeshOpts.adaptiveEps = 0.6;
 
 		for (int iter = 0; iter < maxIter; ++iter) {
 			if (iter > 0) {
@@ -404,42 +521,45 @@ static std::function<double(double,double,double)> getBuiltinLevelSet(
 // ──────────────────────────────────────────────────────────
 
 int cmdSample(const std::string& expression, const std::string& output,
-			  const std::string& hpStr, int resolution, bool noSplit, bool randomMode) {
+			  const std::string& hpStr, int resolution, bool noSplit, bool randomMode,
+			  int kmax, double decay) {
 	Vec3d hp = parseVec3(hpStr);
 	double Lx=2.0*hp[0], Ly=2.0*hp[1], Lz=2.0*hp[2];
 
 	std::function<double(double,double,double)> levelSet;
 
 	if (randomMode) {
-		// Random triperiodic function:
-		// f = Σ c_cos[i]*cos(2π x_i/L_i) + c_sin[i]*sin(2π x_i/L_i)
-		//   + Σ c_cc[i,j]*cos*cos + c_sc[i,j]*sin*cos + c_ss[i,j]*sin*sin
+		// Random triperiodic Fourier series:
+		// f(x,y,z) = Σ_k [ c_k cos(k·ω) + s_k sin(k·ω) ]
+		// where ω = (2πx/Lx, 2πy/Ly, 2πz/Lz), k = (k1,k2,k3), |ki| ≤ kmax
+		// Coefficients decay as 1/|k|^decay to ensure smoothness
+		// kmax and decay are now parameters
+
 		std::random_device rd;
 		std::mt19937 gen(rd());
 		std::uniform_real_distribution<double> dist(-1.0, 1.0);
 
-		double c_cos[3], c_sin[3], c_cc[9], c_sc[9], c_ss[9];
-		for (int i = 0; i < 3; ++i) {
-			c_cos[i] = dist(gen); c_sin[i] = dist(gen);
-			for (int j = 0; j < 3; ++j) {
-				c_cc[i*3+j] = dist(gen);
-				c_sc[i*3+j] = dist(gen);
-				c_ss[i*3+j] = dist(gen);
-			}
-		}
+		// Enumerate all frequency vectors and generate coefficients
+		struct FourierTerm { int k[3]; double c, s; };
+		std::vector<FourierTerm> terms;
+		for (int k0 = -kmax; k0 <= kmax; ++k0)
+			for (int k1 = -kmax; k1 <= kmax; ++k1)
+				for (int k2 = -kmax; k2 <= kmax; ++k2) {
+					if (k0 == 0 && k1 == 0 && k2 == 0) continue; // skip DC
+					double knorm = std::sqrt(k0*k0 + k1*k1 + k2*k2);
+					double weight = 1.0 / std::pow(knorm, decay);
+					terms.push_back({{k0,k1,k2}, dist(gen)*weight, dist(gen)*weight});
+				}
 
-		std::cout << "Random coefficients:\n";
-		std::cout << "  cos: " << c_cos[0] << " " << c_cos[1] << " " << c_cos[2] << "\n";
-		std::cout << "  sin: " << c_sin[0] << " " << c_sin[1] << " " << c_sin[2] << "\n";
+		std::cout << "Random Fourier series: " << terms.size() << " terms, kmax=" << kmax
+				  << ", decay=" << decay << "\n";
 
 		levelSet = [=](double x, double y, double z) {
-			double cx[3] = {cos(2*M_PI*x/Lx), cos(2*M_PI*y/Ly), cos(2*M_PI*z/Lz)};
-			double sx[3] = {sin(2*M_PI*x/Lx), sin(2*M_PI*y/Ly), sin(2*M_PI*z/Lz)};
+			double w[3] = {2*M_PI*x/Lx, 2*M_PI*y/Ly, 2*M_PI*z/Lz};
 			double val = 0;
-			for (int i = 0; i < 3; ++i) {
-				val += c_cos[i]*cx[i] + c_sin[i]*sx[i];
-				for (int j = 0; j < 3; ++j)
-					val += c_cc[i*3+j]*cx[i]*cx[j] + c_sc[i*3+j]*sx[i]*cx[j] + c_ss[i*3+j]*sx[i]*sx[j];
+			for (const auto& t : terms) {
+				double phase = t.k[0]*w[0] + t.k[1]*w[1] + t.k[2]*w[2];
+				val += t.c * cos(phase) + t.s * sin(phase);
 			}
 			return val;
 		};
@@ -531,11 +651,14 @@ int cmdGenerate(const std::string& input, const std::string& output,
 	opts.maxStep = 1.0;
 	opts.mcfWeight = 0.1;
 	opts.enableRemesh = true;
-	opts.remeshOpts.adaptiveEps = 1.0;
+	opts.remeshOpts.adaptiveEps = 0.6;
 	opts.enableSurgery = true;
-	opts.surgeryStartIter = std::max(maxIter * 2 / 3, 30);
-	opts.surgeryInterval = 20;
-	opts.surgeryOpts.singularityTol = 100.0;
+	opts.surgeryStartIter = std::max(maxIter / 3, 20);
+	opts.surgeryInterval = 10;
+	// 对齐 minsurf 主流: surgery-tol=25 surgery-type=2
+	opts.surgeryOpts.singularityTol = 25.0;
+	opts.surgeryOpts.singularityRatio = 0.0;
+	opts.surgeryOpts.surgeryType = 2;
 	opts.outputDir = outputDir;
 	if (!outputDir.empty()) opts.saveInterval = 1;
 
@@ -602,12 +725,15 @@ int main(int argc, char** argv) {
 	auto* cmdS = app.add_subcommand("sample", "Sample isosurface from level set expression");
 	std::string s_expr, s_out, s_hpStr = "1,1,1";
 	int s_res=20; bool s_nosplit=false, s_random=false;
+	int s_kmax=2; double s_decay=2.0;
 	cmdS->add_option("-e,--expression", s_expr,
 		"Level set expression (x,y,z,pi) or built-in: gyroid|schwarzp|diamond");
 	cmdS->add_option("-o,--output", s_out, "Output OBJ")->required();
 	cmdS->add_option("--half-period", s_hpStr, "Half-period x,y,z")->default_val("1,1,1");
 	cmdS->add_option("-r,--resolution", s_res)->default_val(20);
 	cmdS->add_flag("--random", s_random, "Random triperiodic function (ignore -e)");
+	cmdS->add_option("--kmax", s_kmax, "Max frequency index for --random")->default_val(2);
+	cmdS->add_option("--decay", s_decay, "Coefficient decay exponent for --random")->default_val(2.0);
 	cmdS->add_flag("--no-split", s_nosplit);
 
 	// ── generate ──
@@ -630,7 +756,7 @@ int main(int argc, char** argv) {
 	if (cmdO->parsed()) return cmdOptimize(o_in, o_out, hpStr, o_obj, o_iter, o_step,
 										   o_mcf, o_prec, o_surg, o_surgStart, o_surgInt,
 										   o_surgTol, o_nosplit, o_dir);
-	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random);
+	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random, s_kmax, s_decay);
 	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_hpStr, g_iter, g_nosplit, g_dir);
 	return 0;
 }

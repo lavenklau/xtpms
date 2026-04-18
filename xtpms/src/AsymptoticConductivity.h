@@ -138,13 +138,13 @@ struct TailorADCOptions {
 	bool enableSurgery{true};
 	int surgeryInterval{4};   // 每 N 步检查一次
 	int surgeryStartIter{0};  // 从第几步开始允许 surgery
-	PeriodicTriMesh::SurgeryOptions surgeryOpts;
+	SurgeryOptions surgeryOpts;
 
 	std::string outputDir;    // 非空时输出中间结果
 	int saveInterval{50};     // 每 N 步保存一次
 };
 
 // ADC 形状优化主循环
-void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts = {});
+void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts = TailorADCOptions{});
 
 } // namespace xtpms

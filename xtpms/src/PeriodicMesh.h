@@ -67,6 +67,17 @@ struct PeriodizeOptions {
 	std::array<double, 3> resolvedBBoxMax{};
 };
 
+// 拓扑手术选项
+struct SurgeryOptions {
+	// 对齐 minsurf 的主流设置（surgery-tol=25 surgery-type=2，8/14 脚本使用）
+	double singularityTol{25.0};      // 奇异度绝对阈值
+	double singularityRatio{0.0};     // 自适应比例（0 = 禁用，仅用绝对阈值）
+	                                  // max(tol, ratio * avgH)
+	double maxCutAreaFraction{0.3};   // 切除区域最大占比，超过则放弃 surgery（安全阀）
+	int surgeryType{2};               // 1: |H|; 2: max(|κ₁|,|κ₂|)（minsurf 主流）
+	double islandCullRatio{0.1};      // 面数 < 最大连通分量 * ratio 的孤岛被删除
+};
+
 class PeriodicTriMesh : public DefaultTriMesh {
 public:
 	using Base = DefaultTriMesh;
@@ -102,7 +113,7 @@ public:
 	void mergePeriodEdges(double shortEdgeTol);
 
 	// 周期边界合并：边匹配 + 分裂对齐 + 顶点合并，使拓扑非周期网格变为真正周期网格。
-	void mergePeriodBoundary(const MergeBoundaryOptions& options = {});
+	void mergePeriodBoundary(const MergeBoundaryOptions& options = MergeBoundaryOptions{});
 
 	// 将顶点 wrap 到基本域 [0, 2*halfPeriod) 内。
 	void periodShift();
@@ -114,6 +125,10 @@ public:
 	// 返回删除的面数
 	int removeNonPeriodicIslands();
 
+	// 仅保留面数最大的连通分量，返回删除的分量数。
+	// 用于 surgery 后清理残留孤岛，避免 FEM Laplacian 零空间多维化。
+	int keepLargestComponent();
+
 	// 在周期边界处截断跨周期边（和 minsurf split_unit_cell 对齐）
 	// 截断后网格不再是周期闭合的（有边界边在周期面上）
 	void splitUnitCell();
@@ -124,12 +139,7 @@ public:
 
 	// 拓扑手术：检测颈部奇异（高曲率），删除周围面，填洞，去除孤岛。
 	// 返回 true 表示执行了手术。
-	struct SurgeryOptions {
-		double singularityTol{25.0};   // 奇异度阈值
-		int surgeryType{2};            // 1: |H|, 2: max(|κ₁|,|κ₂|)（推荐，检测颈部更好）
-		double islandCullRatio{0.1};   // 面数 < 最大连通分量 * ratio 的孤岛被删除
-	};
-	bool surgery(const SurgeryOptions& opts = {});
+	bool surgery(const SurgeryOptions& opts = SurgeryOptions{});
 
 private:
 	Vec3d halfPeriod_{};

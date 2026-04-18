@@ -186,50 +186,7 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		src.set_point(*v, p);
 	}
 
-	// Step 3: CGAL isotropic remesh in original bbox coordinates
-	// 用 seed 的平均边长，但加 0.02 下限避免过细 seed 让 CGAL 爆炸细分
-	{
-		double sumLen = 0;
-		int nEdges = 0;
-		for (auto e = src.edges_begin(); e != src.edges_end(); ++e) {
-			sumLen += src.calc_edge_length(*e);
-			++nEdges;
-		}
-		double avgLen = (nEdges > 0) ? sumLen / nEdges : 0.1;
-		double targetLen = std::max(avgLen, 0.02);
-		std::cout << "CGAL remesh targetLen=" << targetLen
-				  << " (avgLen=" << avgLen << " floor=0.02)\n";
-		cgalIsotropicRemesh(src, targetLen, 3);
-	}
-
-	// Step 4: Re-clamp boundary vertices after remesh (domain is [0, bbox_size])
-	{
-		double minSize = std::min({
-			static_cast<double>(bmax[0] - bmin[0]),
-			static_cast<double>(bmax[1] - bmin[1]),
-			static_cast<double>(bmax[2] - bmin[2])});
-		// CGAL remesh 已固定边界顶点（vertex_is_constrained_map），
-		// 容差只需覆盖浮点精度误差
-		double tol = 1e-4 * minSize;
-		int clamped = 0;
-		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
-			auto p = src.point(*v);
-			bool changed = false;
-			for (int i = 0; i < 3; ++i) {
-				double hi = static_cast<double>(bmax[i] - bmin[i]);
-				if (std::abs(static_cast<double>(p[i])) < tol) {
-					p[i] = 0; changed = true;
-				} else if (std::abs(static_cast<double>(p[i]) - hi) < tol) {
-					p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(hi);
-					changed = true;
-				}
-			}
-			if (changed) { src.set_point(*v, p); ++clamped; }
-		}
-		if (clamped > 0) std::cout << "Re-clamped " << clamped << " boundary vertices after remesh\n";
-	}
-
-	// Step 5: Build PeriodicTriMesh with bbox half-period, then merge
+	// Step 3: Build PeriodicTriMesh with bbox half-period, then merge
 	{
 		Vec3d bboxHp;
 		for (int i = 0; i < 3; ++i)
@@ -489,22 +446,44 @@ static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
 	const std::function<double(double,double,double)>& levelSet,
 	const Vec3d& hp, int resolution) {
 	double Lx=2.0*hp[0], Ly=2.0*hp[1], Lz=2.0*hp[2];
-	int nx=resolution, ny=resolution, nz=resolution, Np=resolution+1;
+	int nx=resolution, ny=resolution, nz=resolution;
 	double dx=Lx/nx, dy=Ly/ny, dz=Lz/nz;
-	std::vector<xtpms::LevelSetNode> nodes(Np*Np*Np);
-	for (int k=0; k<=nz; ++k)
-		for (int j=0; j<=ny; ++j)
-			for (int i=0; i<=nx; ++i)
-				nodes[i+Np*(j+Np*k)] = {i*dx, j*dy, k*dz, levelSet(i*dx, j*dy, k*dz)};
+	// 周期 MC：nx^3 个基础节点 + 边界 phantom 节点
+	// phantom 节点的函数值 = 对面基础节点的值，坐标 = 实际位置
+	// 这保证边界 cell 和对面 cell 使用相同函数值 → MC 三角化完全匹配
+	int Np = nx; // 基础节点数
+	auto baseIdx = [Np](int i, int j, int k) {
+		return ((i%Np+Np)%Np) + Np * (((j%Np+Np)%Np) + Np * ((k%Np+Np)%Np));
+	};
+	// 基础节点
+	std::vector<xtpms::LevelSetNode> nodes(static_cast<std::size_t>(Np*Np*Np));
+	for (int k=0; k<nz; ++k)
+		for (int j=0; j<ny; ++j)
+			for (int i=0; i<nx; ++i)
+				nodes[static_cast<std::size_t>(baseIdx(i,j,k))] =
+					{i*dx, j*dy, k*dz, levelSet(i*dx, j*dy, k*dz)};
+	// 为边界 cell 创建 phantom 节点（坐标在 [L, L+dx]，函数值 = 对面）
+	std::map<std::tuple<int,int,int>, int> phantomMap;
+	auto getNode = [&](int i, int j, int k) -> int {
+		bool phantom = (i >= nx || j >= ny || k >= nz);
+		if (!phantom) return baseIdx(i, j, k);
+		auto key = std::make_tuple(i, j, k);
+		if (phantomMap.count(key)) return phantomMap[key];
+		int idx = static_cast<int>(nodes.size());
+		double val = nodes[static_cast<std::size_t>(baseIdx(i,j,k))].value;
+		nodes.push_back({i*dx, j*dy, k*dz, val});
+		phantomMap[key] = idx;
+		return idx;
+	};
 	xtpms::SparseVoxelCornerMap voxels;
 	for (int k=0; k<nz; ++k)
 		for (int j=0; j<ny; ++j)
 			for (int i=0; i<nx; ++i) {
 				xtpms::VoxelCornerNodeIndices c{};
-				c[0]=i+Np*(j+Np*k);       c[1]=(i+1)+Np*(j+Np*k);
-				c[2]=(i+1)+Np*((j+1)+Np*k); c[3]=i+Np*((j+1)+Np*k);
-				c[4]=i+Np*(j+Np*(k+1));    c[5]=(i+1)+Np*(j+Np*(k+1));
-				c[6]=(i+1)+Np*((j+1)+Np*(k+1)); c[7]=i+Np*((j+1)+Np*(k+1));
+				c[0]=getNode(i,j,k);       c[1]=getNode(i+1,j,k);
+				c[2]=getNode(i+1,j+1,k);   c[3]=getNode(i,j+1,k);
+				c[4]=getNode(i,j,k+1);     c[5]=getNode(i+1,j,k+1);
+				c[6]=getNode(i+1,j+1,k+1); c[7]=getNode(i,j+1,k+1);
 				voxels[{i,j,k}] = c;
 			}
 	xtpms::DefaultTriMesh src;
@@ -515,18 +494,95 @@ static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
 }
 
 static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, const Vec3d& hp) {
+	// MC 输出的周期边界顶点完全匹配（平移一个周期后重合）
+	// 直接 wrap 到 [0, L) + 哈希去重即可，不需要投影/split
+	const double L[3] = {
+		2.0 * static_cast<double>(hp[0]),
+		2.0 * static_cast<double>(hp[1]),
+		2.0 * static_cast<double>(hp[2])
+	};
+
+	const std::size_t nv = src.n_vertices();
+	// wrap 顶点到 [0, L)
+	std::vector<std::array<double, 3>> wpos(nv);
+	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
+		auto p = src.point(*v);
+		auto& w = wpos[static_cast<std::size_t>((*v).idx())];
+		for (int i = 0; i < 3; ++i) {
+			double pi = static_cast<double>(p[i]);
+			while (pi < -1e-8) pi += L[i];
+			while (pi >= L[i] - 1e-8) pi -= L[i];
+			if (pi < 0) pi = 0;
+			w[static_cast<std::size_t>(i)] = pi;
+		}
+	}
+
+	// 哈希去重：量化坐标到 grid，合并相同 cell 的顶点
+	const double res = 1e-5; // 量化分辨率
+	struct GridKey {
+		int64_t x, y, z;
+		bool operator==(const GridKey& o) const { return x==o.x && y==o.y && z==o.z; }
+	};
+	struct GridHash {
+		std::size_t operator()(const GridKey& k) const {
+			return std::hash<int64_t>()(k.x * 1000003LL + k.y) * 1000003LL + k.z;
+		}
+	};
+	auto quantize = [res](double v) -> int64_t { return static_cast<int64_t>(std::round(v / res)); };
+
+	std::unordered_map<GridKey, int, GridHash> grid;
+	std::vector<std::array<double, 3>> uniqueVerts;
+	std::vector<int> vmap(nv);
+
+	for (std::size_t i = 0; i < nv; ++i) {
+		GridKey key{quantize(wpos[i][0]), quantize(wpos[i][1]), quantize(wpos[i][2])};
+		auto it = grid.find(key);
+		if (it != grid.end()) {
+			vmap[i] = it->second;
+		} else {
+			int idx = static_cast<int>(uniqueVerts.size());
+			grid[key] = idx;
+			uniqueVerts.push_back(wpos[i]);
+			vmap[i] = idx;
+		}
+	}
+
+	// 构建 PeriodicTriMesh
 	xtpms::PeriodicTriMesh mesh;
 	mesh.setHalfPeriod(hp);
-	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
-		mesh.add_vertex(src.point(*v));
+	std::vector<xtpms::PeriodicTriMesh::VertexHandle> vh(uniqueVerts.size());
+	for (std::size_t i = 0; i < uniqueVerts.size(); ++i) {
+		vh[i] = mesh.add_vertex(Vec3d(
+			static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][0]),
+			static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][1]),
+			static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][2])));
+	}
+	// 去重复面：weld 后不同原始面可能映射到相同三顶点
+	std::set<std::array<int,3>> faceSet;
 	for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
 		auto fv = src.cfv_iter(*f);
-		int a=(*fv).idx(); ++fv; int b=(*fv).idx(); ++fv; int c=(*fv).idx();
-		mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
-					  xtpms::PeriodicTriMesh::VertexHandle(b),
-					  xtpms::PeriodicTriMesh::VertexHandle(c));
+		int a = vmap[static_cast<std::size_t>((*fv).idx())]; ++fv;
+		int b = vmap[static_cast<std::size_t>((*fv).idx())]; ++fv;
+		int c = vmap[static_cast<std::size_t>((*fv).idx())];
+		if (a == b || b == c || a == c) continue;
+		// 规范化面（最小顶点在前）用于去重
+		std::array<int,3> key = {a, b, c};
+		std::sort(key.begin(), key.end());
+		if (!faceSet.insert(key).second) continue; // 重复面
+		auto fh = mesh.add_face(vh[static_cast<std::size_t>(a)],
+								vh[static_cast<std::size_t>(b)],
+								vh[static_cast<std::size_t>(c)]);
+		if (!fh.is_valid())
+			mesh.add_face(vh[static_cast<std::size_t>(a)],
+						  vh[static_cast<std::size_t>(c)],
+						  vh[static_cast<std::size_t>(b)]);
 	}
-	mesh.mergePeriodBoundary();
+
+	int bnd = 0;
+	for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e)
+		if (mesh.is_boundary(*e)) ++bnd;
+	std::cerr << "[merge] after weld: nv=" << mesh.n_vertices()
+			  << " nf=" << mesh.n_faces() << " bnd=" << bnd << "\n";
 	return mesh;
 }
 

@@ -646,7 +646,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 
 	// Sanity check helper: returns error message or empty string if OK
 	// nfLimit < 0 时不检查面数上限（用于 iter=0 接受高密度初始网格）
-	auto meshSanityCheck = [&](const char* stage, int nfLimit = 50000) -> std::string {
+	auto meshSanityCheck = [&](const char* stage, int nfLimit = 100000) -> std::string {
 		const int nv = static_cast<int>(mesh.n_vertices());
 		const int nf = static_cast<int>(mesh.n_faces());
 		if (nf == 0 || nv == 0)
@@ -793,15 +793,12 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-obj.gradient);
 
 		// [9] preconditioned descent direction
-		// 对齐 minsurf: c = 1/precondition_strength（之前漏了取倒数，c 偏小 100 倍，
-		// 导致 Laplacian 平滑不足 → 梯度噪声 → line search 步长坍塌）
 		double c = 1.0 / conv.estimatePrecondition(20.0);
 		auto L = assembleLaplacian(mesh, geom.cotWeights);
 		Eigen::SparseMatrix<double> G = -c * L;
 		for (int i = 0; i < nv; ++i) G.coeffRef(i, i) += geom.vertexAreas[i];
 
 		Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> precSolver(G);
-		// 对齐 minsurf: fweight = c + 1
 		double fweight = c + 1.0;
 		Eigen::VectorXd dn = -precSolver.solve(geom.vertexAreas.cwiseProduct(fweight * dfdvn).eval());
 
@@ -842,28 +839,33 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		// maximal unflip step
 		double tbar = conv.estimateNextStep(opts.maxStep);
 		double step = tbar;
+		// maximal unflip step: per-face search, cos(60°) threshold
 		const Vec3d hp = mesh.halfPeriod();
-		for (int trial = 0; trial < 20; ++trial) {
-			bool valid = true;
-			for (auto fit = mesh.faces_begin(); fit != mesh.faces_end() && valid; ++fit) {
-				int fidx[3];
-				getFaceVertexIdx(mesh, *fit, fidx);
-				auto shift = [&](int vi) {
-					return toEig(mesh.point(VH(vi))) + step * stepVec[static_cast<std::size_t>(vi)];
-				};
-				Eigen::Vector3d np0 = shift(fidx[0]);
-				Eigen::Vector3d np1 = shift(fidx[1]);
-				Eigen::Vector3d np2 = shift(fidx[2]);
-				Eigen::Vector3d oldE1 = toEig(makePeriod(mesh.point(VH(fidx[1])) - mesh.point(VH(fidx[0])), hp));
-				Eigen::Vector3d oldE2 = toEig(makePeriod(mesh.point(VH(fidx[2])) - mesh.point(VH(fidx[0])), hp));
-				Eigen::Vector3d oldN = oldE1.cross(oldE2);
+		const double cosThres = 0.5; // cos(60°)
+		for (auto fit = mesh.faces_begin(); fit != mesh.faces_end(); ++fit) {
+			double faceStep = step;
+			int fidx[3];
+			getFaceVertexIdx(mesh, *fit, fidx);
+			Eigen::Vector3d oldE1 = toEig(makePeriod(mesh.point(VH(fidx[1])) - mesh.point(VH(fidx[0])), hp));
+			Eigen::Vector3d oldE2 = toEig(makePeriod(mesh.point(VH(fidx[2])) - mesh.point(VH(fidx[0])), hp));
+			Eigen::Vector3d oldN = oldE1.cross(oldE2);
+			double oldLen = oldN.norm();
+			if (oldLen < 1e-20) continue;
+			oldN /= oldLen;
+			while (faceStep > 1e-10) {
+				Eigen::Vector3d np0 = toEig(mesh.point(VH(fidx[0]))) + faceStep * stepVec[static_cast<std::size_t>(fidx[0])];
+				Eigen::Vector3d np1 = toEig(mesh.point(VH(fidx[1]))) + faceStep * stepVec[static_cast<std::size_t>(fidx[1])];
+				Eigen::Vector3d np2 = toEig(mesh.point(VH(fidx[2]))) + faceStep * stepVec[static_cast<std::size_t>(fidx[2])];
 				Eigen::Vector3d newE1 = toEig(makePeriod(toOM(np1) - toOM(np0), hp));
 				Eigen::Vector3d newE2 = toEig(makePeriod(toOM(np2) - toOM(np0), hp));
 				Eigen::Vector3d newN = newE1.cross(newE2);
-				if (oldN.dot(newN) <= 0) valid = false;
+				double newLen = newN.norm();
+				if (newLen > 1e-20 && newN.dot(oldN) / newLen > cosThres) {
+					break;
+				}
+				faceStep *= 0.7;
 			}
-			if (valid) break;
-			step *= 0.7;
+			step = std::min(step, faceStep);
 		}
 
 		// [11] 回溯线搜索：尝试步长，求解 ADC，检查目标是否改善

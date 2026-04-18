@@ -525,9 +525,8 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 	const double domMin[3] = {0.0, 0.0, 0.0};
 	const double domMax[3] = {Lx, Ly, Lz};
 
-	// 边界容差：CGAL remesh 已固定边界顶点位置（vertex_is_constrained_map），
-	// 因此可以用较紧的容差。过宽会误标偏移顶点导致投影不精确。
-	const double borderTol = std::max(1e-10, 1e-4 * std::min({Lx, Ly, Lz}));
+	// 边界容差：需要足够宽以覆盖 CGAL remesh 可能推离的顶点
+	const double borderTol = std::max(1e-10, 1e-3 * std::min({Lx, Ly, Lz}));
 
 	// ── Step 1: 标记所有边界顶点 ──
 	auto classifyVertices = [&]() {
@@ -777,15 +776,43 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 			faces.push_back({a, b, c});
 		}
 
-		// 周期去重
-		PeriodicVertexGrid grid(
-			{domMin[0], domMin[1], domMin[2]},
-			{Lx, Ly, Lz},
-			weldTol);
+		// 周期去重：wrap 到 [0, L) + 量化哈希
+		const double res = weldTol;
+		struct GridKey {
+			int64_t x, y, z;
+			bool operator==(const GridKey& o) const { return x==o.x && y==o.y && z==o.z; }
+		};
+		struct GridHash {
+			std::size_t operator()(const GridKey& k) const {
+				return std::hash<int64_t>()(k.x * 1000003LL + k.y) * 1000003LL + k.z;
+			}
+		};
 
+		std::unordered_map<GridKey, int, GridHash> gridMap;
+		std::vector<std::array<double, 3>> uniqueVerts;
 		std::vector<int> vmap(nv);
+
 		for (std::size_t i = 0; i < nv; ++i) {
-			vmap[i] = grid.insert(verts[i][0], verts[i][1], verts[i][2]);
+			// wrap 到 [0, L)
+			double wx = verts[i][0] - domMin[0];
+			double wy = verts[i][1] - domMin[1];
+			double wz = verts[i][2] - domMin[2];
+			while (wx < -1e-8) wx += Lx; while (wx >= Lx - 1e-8) wx -= Lx; if (wx < 0) wx = 0;
+			while (wy < -1e-8) wy += Ly; while (wy >= Ly - 1e-8) wy -= Ly; if (wy < 0) wy = 0;
+			while (wz < -1e-8) wz += Lz; while (wz >= Lz - 1e-8) wz -= Lz; if (wz < 0) wz = 0;
+
+			GridKey key{static_cast<int64_t>(std::round(wx / res)),
+						static_cast<int64_t>(std::round(wy / res)),
+						static_cast<int64_t>(std::round(wz / res))};
+			auto it = gridMap.find(key);
+			if (it != gridMap.end()) {
+				vmap[i] = it->second;
+			} else {
+				int idx = static_cast<int>(uniqueVerts.size());
+				gridMap[key] = idx;
+				uniqueVerts.push_back({wx + domMin[0], wy + domMin[1], wz + domMin[2]});
+				vmap[i] = idx;
+			}
 		}
 
 		// 重建面表，跳过退化三角形
@@ -801,7 +828,7 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 
 		// 构建 triangle-triangle adjacency 并 BFS 统一朝向
 		const int nNewF = static_cast<int>(newFaces.size());
-		const int nNewV = grid.counter;
+		const int nNewV = static_cast<int>(uniqueVerts.size());
 
 		// 建边→面邻接
 		struct EdgeKey {
@@ -879,7 +906,7 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 		std::vector<VertexHandle> newVH;
 		newVH.reserve(static_cast<std::size_t>(nNewV));
 		for (int i = 0; i < nNewV; ++i) {
-			const auto& pt = grid.points[static_cast<std::size_t>(i)];
+			const auto& pt = uniqueVerts[static_cast<std::size_t>(i)];
 			newVH.push_back(this->add_vertex(Vec3d(
 				static_cast<DefaultTriMesh::Scalar>(pt[0]),
 				static_cast<DefaultTriMesh::Scalar>(pt[1]),
@@ -891,7 +918,6 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 				newVH[static_cast<std::size_t>(f[1])],
 				newVH[static_cast<std::size_t>(f[2])]);
 			if (!fh.is_valid()) {
-				// 尝试翻转朝向
 				this->add_face(
 					newVH[static_cast<std::size_t>(f[0])],
 					newVH[static_cast<std::size_t>(f[2])],
@@ -1107,20 +1133,33 @@ void PeriodicTriMesh::splitUnitCell() {
 		for (auto eh : toSplit) {
 			if (!eh.is_valid() || this->status(eh).deleted()) continue;
 			HalfedgeHandle he = this->halfedge_handle(eh, 0);
-			Vec3d p0 = this->point(this->from_vertex_handle(he));
-			Vec3d p1 = p0 + wrapVector(this->point(this->to_vertex_handle(he)) - p0);
+			VertexHandle vFrom = this->from_vertex_handle(he);
+			VertexHandle vTo = this->to_vertex_handle(he);
+			Vec3d p0 = this->point(vFrom);
+			Vec3d p1 = p0 + wrapVector(this->point(vTo) - p0);
 			double a0 = static_cast<double>(p0[axis]);
 			double a1 = static_cast<double>(p1[axis]);
 			double cut = (a1 > L[axis]) ? L[axis] : 0.0;
 			double denom = a1 - a0;
 			if (std::abs(denom) < 1e-15) continue;
 			double t = (cut - a0) / denom;
-			if (t <= 0.01 || t >= 0.99) continue;
-			Vec3d c;
-			for (int k = 0; k < 3; ++k)
-				c[k] = static_cast<DefaultTriMesh::Scalar>(
-					(1.0 - t) * static_cast<double>(p0[k]) + t * static_cast<double>(p1[k]));
-			this->split(eh, c);
+			if (t <= 0.01) {
+				// split 点太靠近 from 端 → snap from 到边界
+				auto pp = this->point(vFrom);
+				pp[axis] = static_cast<DefaultTriMesh::Scalar>(cut);
+				this->set_point(vFrom, pp);
+			} else if (t >= 0.99) {
+				// split 点太靠近 to 端 → snap to 到边界
+				auto pp = this->point(vTo);
+				pp[axis] = static_cast<DefaultTriMesh::Scalar>(cut);
+				this->set_point(vTo, pp);
+			} else {
+				Vec3d c;
+				for (int k = 0; k < 3; ++k)
+					c[k] = static_cast<DefaultTriMesh::Scalar>(
+						(1.0 - t) * static_cast<double>(p0[k]) + t * static_cast<double>(p1[k]));
+				this->split(eh, c);
+			}
 		}
 		periodShift();
 	}
@@ -1292,7 +1331,6 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 	// 避免在整体褶皱时（avgH 接近或超过 tol）把普通高曲率顶点误判为奇异
 	// ══════════════════════════════════════════════════════════
 	const double effTol = std::max(opts.singularityTol, opts.singularityRatio * avgH);
-	std::cerr << "[surgery] effective threshold=" << effTol << "\n";
 	std::set<int> toDeleteFaceSet;
 	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
 		if (singMeasure[static_cast<std::size_t>((*v_it).idx())] > effTol) {
@@ -1306,8 +1344,6 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 	{
 		const std::size_t nfTotal = this->n_faces();
 		double cutFrac = nfTotal > 0 ? (double)toDeleteFaceSet.size() / nfTotal : 0;
-		std::cerr << "[surgery] cut candidate: " << toDeleteFaceSet.size()
-				  << "/" << nfTotal << " faces (" << cutFrac * 100 << "%)\n";
 		if (cutFrac > opts.maxCutAreaFraction) {
 			std::cerr << "[surgery] aborted: cut fraction " << cutFrac
 					  << " > maxCutAreaFraction " << opts.maxCutAreaFraction
@@ -1483,7 +1519,6 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 				if (!loop.empty()) loops.push_back(loop);
 			}
 		}
-		std::cerr << "[surgery] found " << loops.size() << " boundary loops\n";
 
 		for (auto& loop : loops) {
 			// 收集种子顶点
@@ -1595,7 +1630,6 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 					break;
 				}
 			}
-			std::cerr << "[surgery] hole filled=" << filledCount << "\n";
 
 			// 将 CGAL submesh 的新面写回原网格
 			// 记录 cmesh 中原始面的数量（填洞前已有的面）
@@ -1631,8 +1665,7 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 					else ++addFail;
 				}
 			}
-			if (addFail > 0)
-				std::cerr << "[surgery] writeback: ok=" << addOk << " FAILED=" << addFail << "\n";
+			(void)addOk; (void)addFail;
 
 				// localSmoothing: bilaplacian fairing（和 minsurf 对齐）
 				// 收集补丁+邻域面（扩展一层）
@@ -1730,8 +1763,7 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 						if (!igl::min_quad_with_fixed_solve(data, B, fixedY, Beq, subV)) break;
 						// 检查 NaN
 						if (subV.hasNaN()) {
-							std::cerr << "[surgery] bilaplacian produced NaN, reverting\n";
-							// 恢复原始坐标
+								// 恢复原始坐标
 							for (int si = 0; si < snv; ++si) {
 								int omi = subVInv[static_cast<std::size_t>(si)];
 								auto sp = syncedPos.count(omi) ? syncedPos[omi] : this->point(VertexHandle(omi));

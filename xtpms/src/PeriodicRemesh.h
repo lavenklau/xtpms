@@ -26,9 +26,9 @@ inline RemeshOptions defaultRemeshOptions(const PeriodicTriMesh& mesh) {
 	double hp2 = static_cast<double>(mesh.halfPeriod()[2]);
 	double meanPeriod = 2.0 * std::cbrt(hp0 * hp1 * hp2);
 	RemeshOptions opts;
-	opts.targetLength = meanPeriod * 0.1;  // 对齐 minsurf（hp=1→targetLen=0.2）
-	opts.minLength = opts.targetLength * 0.1;  // 对齐 minsurf (0.02/0.2=10%)
-	opts.adaptiveEps = 0.6;  // 对齐 minsurf delaunayRemesh(..., 0.6)
+	opts.targetLength = meanPeriod * 0.1;
+	opts.minLength = opts.targetLength * 0.1;
+	opts.adaptiveEps = 0.6;
 	opts.outerIter = 1;
 	opts.innerIter = 5;
 	return opts;

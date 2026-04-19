@@ -379,8 +379,16 @@ vcpkg_installed/
 # CTest
 Testing/
 
-# VS solution and configure scripts (auto-generated)
+# VS solution and project files (CMake auto-generated)
 *.sln
+*.vcxproj
+*.vcxproj.filters
 CMakePresets.json
 configure.cmd
 configure.ps1
+
+# Batch results and diagnostic outputs
+batch_result*/
+hung_cases/
+minsurf_comparison/
+diff.txt

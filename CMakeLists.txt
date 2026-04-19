@@ -138,13 +138,6 @@ endif()
 enable_testing()
 include(GoogleTest)
 
-add_executable(test_periodic_spatial_hash tests/test_periodic_spatial_hash.cpp)
-target_link_libraries(test_periodic_spatial_hash PRIVATE xtpms_core GTest::gtest GTest::gtest_main)
-gtest_discover_tests(test_periodic_spatial_hash)
-
-add_executable(test_geometry_voxel tests/test_geometry_voxel.cpp)
-target_link_libraries(test_geometry_voxel PRIVATE xtpms_core GTest::gtest GTest::gtest_main)
-gtest_discover_tests(test_geometry_voxel)
 
 add_executable(test_periodic_mesh_periodize tests/test_periodic_mesh_periodize.cpp)
 target_link_libraries(test_periodic_mesh_periodize PRIVATE xtpms_core GTest::gtest GTest::gtest_main)

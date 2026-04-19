@@ -18,7 +18,7 @@ using EH = PeriodicTriMesh::EdgeHandle;
 using HH = PeriodicTriMesh::HalfedgeHandle;
 using FH = PeriodicTriMesh::FaceHandle;
 
-// 周期包装：将差向量映射到 [-hp, hp)
+// Periodic wrapping: map a difference vector into [-hp, hp)
 Vec3d makePeriod(const Vec3d& v, const Vec3d& hp) {
 	Vec3d out = v;
 	for (int i = 0; i < 3; ++i) {
@@ -32,21 +32,21 @@ Vec3d makePeriod(const Vec3d& v, const Vec3d& hp) {
 	return out;
 }
 
-// 周期边长
+// Periodic edge length
 double periodEdgeLength(const PeriodicTriMesh& m, EH eh) {
 	HH he = m.halfedge_handle(eh, 0);
 	Vec3d ev = makePeriod(m.point(m.to_vertex_handle(he)) - m.point(m.from_vertex_handle(he)), m.halfPeriod());
 	return ev.norm();
 }
 
-// 周期边中点（minsurf: eval_period_edge(he, 0.5)）
+// Periodic edge midpoint (minsurf: eval_period_edge(he, 0.5))
 Vec3d periodMidpoint(const PeriodicTriMesh& m, HH he) {
 	const Vec3d& p0 = m.point(m.from_vertex_handle(he));
 	Vec3d ev = makePeriod(m.point(m.to_vertex_handle(he)) - p0, m.halfPeriod());
 	return p0 + ev * 0.5;
 }
 
-// 周期扇形角度（minsurf: period_sector_angle）
+// Periodic sector angle (minsurf: period_sector_angle)
 double periodSectorAngle(const PeriodicTriMesh& m, HH he) {
 	const Vec3d& a = m.point(m.from_vertex_handle(he));
 	const Vec3d hp = m.halfPeriod();
@@ -58,7 +58,7 @@ double periodSectorAngle(const PeriodicTriMesh& m, HH he) {
 	return std::acos(cosA);
 }
 
-// 周期面面积
+// Periodic face area
 double periodFaceArea(const PeriodicTriMesh& m, FH fh) {
 	auto fv = m.cfv_iter(fh);
 	const Vec3d& p0 = m.point(*fv); ++fv;
@@ -68,7 +68,7 @@ double periodFaceArea(const PeriodicTriMesh& m, FH fh) {
 	return 0.5 * (e1 % e2).norm();
 }
 
-// 顶点法向
+// Vertex normal
 Vec3d vertexNormal(const PeriodicTriMesh& m, VH vh) {
 	Vec3d n(0, 0, 0);
 	const Vec3d hp = m.halfPeriod();
@@ -88,14 +88,14 @@ Vec3d vertexNormal(const PeriodicTriMesh& m, VH vh) {
 	return n;
 }
 
-// Delaunay 条件：把菱形四个顶点 unwrap 到同一位置再算角度
+// Delaunay condition: unwrap all four diamond vertices to the same position before computing angles
 bool isDelaunay(const PeriodicTriMesh& m, EH eh) {
 	if (m.is_boundary(eh)) return true;
 	HH he0 = m.halfedge_handle(eh, 0);
 	HH he1 = m.halfedge_handle(eh, 1);
 	const Vec3d hp = m.halfPeriod();
 
-	// 菱形: edge = (v0, v1), opposite vertices = (v2, v3)
+	// Diamond: edge = (v0, v1), opposite vertices = (v2, v3)
 	// v0 = from(he0), v1 = to(he0)
 	// v2 = to(next(he0)),  v3 = to(next(he1))
 	const Vec3d& p0 = m.point(m.from_vertex_handle(he0));
@@ -116,7 +116,7 @@ bool isDelaunay(const PeriodicTriMesh& m, EH eh) {
 	return (a2 + a3) <= M_PI + 1e-8;
 }
 
-// 外接圆心
+// Circumcenter
 Vec3d circumcenter(const Vec3d& p1, const Vec3d& p2, const Vec3d& p3) {
 	double a = (p3 - p2).norm(), b = (p3 - p1).norm(), c = (p2 - p1).norm();
 	double a2 = a * a, b2 = b * b, c2 = c * c;
@@ -128,7 +128,7 @@ Vec3d circumcenter(const Vec3d& p1, const Vec3d& p2, const Vec3d& p3) {
 	return p1 * (w0 / wsum) + p2 * (w1 / wsum) + p3 * (w2 / wsum);
 }
 
-// period_shift: 将所有顶点 wrap 回 [0, 2*hp)
+// period_shift: wrap all vertices back into [0, 2*hp)
 void periodShift(PeriodicTriMesh& m) {
 	const Vec3d hp = m.halfPeriod();
 	for (auto v = m.vertices_begin(); v != m.vertices_end(); ++v) {
@@ -144,8 +144,8 @@ void periodShift(PeriodicTriMesh& m) {
 	}
 }
 
-// collapse foldover 检查（minsurf: shouldCollapse）
-// 检查 collapse he 到 midpoint 后，保留顶点周围面是否翻转
+// Collapse foldover check (minsurf: shouldCollapse)
+// Check whether faces around the kept vertex flip after collapsing he to midpoint
 bool shouldCollapse(const PeriodicTriMesh& m, HH he, const Vec3d& midpoint) {
 	VH vKeep = m.to_vertex_handle(he);
 	VH vRemove = m.from_vertex_handle(he);
@@ -157,16 +157,16 @@ bool shouldCollapse(const PeriodicTriMesh& m, HH he, const Vec3d& midpoint) {
 		VH vb = m.to_vertex_handle(m.next_halfedge_handle(*voh));
 		if (va == vRemove || vb == vRemove) continue;
 
-		// 所有点都 make_period 到 midpoint 附近
+		// Wrap all points to the neighborhood of midpoint via make_period
 		Vec3d a = midpoint + makePeriod(m.point(va) - midpoint, hp);
 		Vec3d b = midpoint + makePeriod(m.point(vb) - midpoint, hp);
 		Vec3d n = (a - midpoint) % (b - midpoint);
-		if (n.sqrnorm() < 1e-20) return false; // degenerate → 不 collapse
+		if (n.sqrnorm() < 1e-20) return false; // degenerate -> do not collapse
 	}
 	return true;
 }
 
-// 平均边长
+// Average edge length
 double estimateAvgEdgeLength(const PeriodicTriMesh& m) {
 	double total = 0;
 	int cnt = 0;
@@ -177,7 +177,7 @@ double estimateAvgEdgeLength(const PeriodicTriMesh& m) {
 	return (cnt > 0) ? total / cnt : 0.1;
 }
 
-// 曲率自适应目标边长（和 minsurf findTotalCurvatureTargetL 完全对齐）
+// Curvature-adaptive target edge length (aligned exactly with minsurf findTotalCurvatureTargetL)
 // averageK = mean of (4H²-2K) at two endpoints
 // L = flatLen * eps / (fabs(sqrt(averageK)) + eps)
 double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh,
@@ -188,7 +188,7 @@ double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh,
 
 	double averageK = 0;
 	for (int s = 0; s < 2; ++s) {
-		// 构建 1-ring → Compile1ring（和 minsurf 完全一致）
+		// Build 1-ring -> Compile1ring (exactly matching minsurf)
 		Eigen::Vector3d center(
 			static_cast<double>(m.point(v[s])[0]),
 			static_cast<double>(m.point(v[s])[1]),
@@ -215,7 +215,7 @@ double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh,
 	}
 	averageK /= 2.0;
 
-	// 和 minsurf 完全一致：fabs(sqrt(averageK))
+	// Exactly matching minsurf: fabs(sqrt(averageK))
 	double sqrtK = (averageK >= 0) ? std::sqrt(averageK) : std::sqrt(-averageK);
 	double L = flatLength * epsilon / (sqrtK + epsilon);
 	return L;
@@ -224,7 +224,7 @@ double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh,
 } // namespace
 
 // ══════════════════════════════════════════════════════════════
-// delaunayRemesh（严格按 minsurf 流程）
+// delaunayRemesh (strictly following the minsurf procedure)
 // ══════════════════════════════════════════════════════════════
 
 void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
@@ -245,7 +245,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	const double adaptEps = (opts.adaptiveEps > 0) ? (1.0 / opts.adaptiveEps) : 0;
 	const bool useAdaptive = (adaptEps > 0);
 
-	// 每条边的目标边长（自适应或全局）
+	// Target edge length per edge (adaptive or global)
 	auto edgeTargetLen = [&](EH eh) -> double {
 		if (useAdaptive)
 			return adaptiveTargetLength(mesh, eh, flatLen, adaptEps);
@@ -263,7 +263,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 
 		// ── Phase 1: split long edges + collapse short edges ──
 		{
-			// split（单 pass，遍历快照）
+			// Split (single pass, iterate over snapshot)
 			std::vector<EH> toSplit;
 			for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
 				double len = periodEdgeLength(mesh, *e);
@@ -281,7 +281,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 			mesh.garbage_collection();
 			dbgSave("1_after_split");
 
-			// collapse（单 pass）
+			// Collapse (single pass)
 			std::vector<EH> toCollapse;
 			for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
 				if (mesh.status(*e).deleted()) continue;
@@ -290,7 +290,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 				if (len < tgt * opts.collapseRatio)
 					toCollapse.push_back(*e);
 			}
-			// split 阈值（用于判断 collapse 后是否产生过长边）
+			// Split threshold (used to check whether collapse would produce overly long edges)
 			double lmax = flatLen * opts.splitRatio;
 			int collapsed = 0;
 			for (EH eh : toCollapse) {
@@ -299,8 +299,8 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 				if (!mesh.is_collapse_ok(he)) continue;
 				Vec3d mid = periodMidpoint(mesh, he);
 				double heLen = periodEdgeLength(mesh, eh);
-				// 对齐 minsurf：collapse 后不应产生超过 lmax 的邻边
-				// 如果 collapse 后保留顶点的最长邻边 > lmax，且当前边不是极短（> 5% minLen），跳过
+				// Aligned with minsurf: collapse should not produce neighbor edges longer than lmax
+				// If the longest neighbor edge of the kept vertex after collapse > lmax, and the current edge is not extremely short (> 5% minLen), skip
 				{
 					VH vKeep = mesh.to_vertex_handle(he);
 					VH vRemove = mesh.from_vertex_handle(he);
@@ -385,7 +385,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 					FH fh = mesh.face_handle(*voh);
 					double fArea = periodFaceArea(mesh, fh);
 
-					// 面三个顶点 unwrap 到 pv 附近
+					// Unwrap the three face vertices to the neighborhood of pv
 					auto fvi = mesh.cfv_iter(fh);
 					Vec3d fp0 = pv + makePeriod(mesh.point(*fvi) - pv, hp); ++fvi;
 					Vec3d fp1 = pv + makePeriod(mesh.point(*fvi) - pv, hp); ++fvi;
@@ -416,10 +416,10 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 		}
 	}
 
-	// 删除度为 3 的顶点：改用 edge collapse（is_collapse_ok 保证流形性）
-	// 原先的"delete_vertex + add_face"没拓扑检查，会在非流形邻居配置下留洞
+	// Remove degree-3 vertices: use edge collapse instead (is_collapse_ok guarantees manifoldness)
+	// The previous "delete_vertex + add_face" approach lacked topology checks and could leave holes in non-manifold neighbor configurations
 	{
-		// 先收集快照，避免迭代中修改
+		// Collect a snapshot first to avoid modifying during iteration
 		std::vector<VH> deg3Verts;
 		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 			if (mesh.status(*v_it).deleted()) continue;
@@ -429,8 +429,8 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 		int collapsed = 0, skipped = 0;
 		for (VH vh : deg3Verts) {
 			if (!vh.is_valid() || mesh.status(vh).deleted()) continue;
-			if (mesh.valence(vh) != 3) continue; // 可能因前面 collapse 而变化
-			// 找一条 is_collapse_ok 的邻接半边，从 vh 出发 collapse（保留对端顶点）
+			if (mesh.valence(vh) != 3) continue; // may have changed due to earlier collapses
+			// Find an adjacent halfedge where is_collapse_ok holds, collapse from vh (keeping the opposite vertex)
 			HH chosen;
 			for (auto voh = mesh.cvoh_iter(vh); voh.is_valid(); ++voh) {
 				if (mesh.is_collapse_ok(*voh)) { chosen = *voh; break; }
@@ -439,7 +439,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 				mesh.collapse(chosen);
 				++collapsed;
 			} else {
-				++skipped; // 无安全 collapse 方向，保留 deg-3 顶点
+				++skipped; // no safe collapse direction, keep the deg-3 vertex
 			}
 		}
 		if (skipped > 0)
@@ -450,7 +450,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	mesh.garbage_collection();
 	periodShift(mesh);
 
-	// 检查
+	// Sanity check
 	int bndEdges = 0;
 	for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e)
 		if (mesh.is_boundary(*e)) ++bndEdges;

@@ -1,8 +1,8 @@
 #pragma once
 
-// 模块 AABBTree：基于 CGAL 的 AABB 最近点查询。
-// - TriMeshAABBTree：三角网格（已实现）
-// - SegmentAABBTree：折线/线段集（待实现，API 与三角网相同：非模板类 + 模板 build / closest_point）
+// Module AABBTree: AABB nearest-point queries based on CGAL.
+// - TriMeshAABBTree: triangle mesh (implemented)
+// - SegmentAABBTree: polyline/segment set (to be implemented; same API as triangle mesh: non-template class + template build / closest_point)
 
 #include <array>
 #include <cstddef>
@@ -20,7 +20,7 @@
 
 namespace xtpms {
 
-/// 用户点类型与 double 坐标互转；非常规类型请特化。
+/// Converts between user point types and double coordinates; specialize for non-standard types.
 template<typename Point3>
 struct AABBPointTraits {
 	static double cx(const Point3& p) { return static_cast<double>(p[0]); }
@@ -37,10 +37,10 @@ struct AABBPointTraits<std::array<double, 3>> {
 	static std::array<double, 3> make(double x, double y, double z) { return {x, y, z}; }
 };
 
-/// 三角形面片：顶点索引，对应 build 时传入的顶点表下标。
+/// Triangle face: vertex indices corresponding to the vertex array passed to build.
 using TriMeshFace = std::array<std::size_t, 3>;
 
-/// 最近点查询结果（三角/线段树共用字段名：primitive_index 在三角网中为面片下标）。
+/// Nearest-point query result (shared field names for triangle/segment trees: primitive_index is the face index in triangle meshes).
 template<typename QueryPoint>
 struct AABBNearestHit {
 	QueryPoint closest{};

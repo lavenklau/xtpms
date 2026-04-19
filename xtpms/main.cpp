@@ -56,7 +56,7 @@ static void cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeL
 		cmesh.add_face(vmap[a], vmap[b], vmap[c]);
 	}
 
-	// 固定边界顶点位置 + 保护边界边
+	// Constrain boundary vertex positions + protect boundary edges
 	auto vcmap = cmesh.add_property_map<CGALMesh::Vertex_index, bool>("v:constrained", false).first;
 	for (auto v : cmesh.vertices())
 		if (CGAL::is_border(v, cmesh)) vcmap[v] = true;
@@ -99,14 +99,14 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		return false;
 	}
 
-	// 检测输入是否已经是闭合周期网格（bnd=0）
+	// Detect whether the input is already a closed periodic mesh (bnd=0)
 	{
 		bool hasBnd = false;
 		for (auto e = src.edges_begin(); e != src.edges_end(); ++e)
 			if (src.is_boundary(*e)) { hasBnd = true; break; }
 		if (!hasBnd) {
-			// 已经闭合：直接读入，不做 remesh/merge/scale
-			// 周期边界点已 merge，bbox 无法推断实际周期，必须指定 --half-period
+			// Already closed: read directly, skip remesh/merge/scale
+			// Periodic boundary vertices are already merged; bbox cannot infer the actual period, so --half-period must be specified
 			if (hpStr.empty() || hpStr == "auto") {
 				std::cerr << "Error: closed periodic mesh requires --half-period\n";
 				return false;
@@ -128,7 +128,7 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		}
 	}
 
-	// 以下处理有边界（需要 remesh + merge）的输入
+	// Below handles input with boundary (requires remesh + merge)
 
 	// Compute bbox
 	Vec3d bmin, bmax;
@@ -452,14 +452,14 @@ static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
 	double Lx=2.0*hp[0], Ly=2.0*hp[1], Lz=2.0*hp[2];
 	int nx=resolution, ny=resolution, nz=resolution;
 	double dx=Lx/nx, dy=Ly/ny, dz=Lz/nz;
-	// 周期 MC：nx^3 个基础节点 + 边界 phantom 节点
-	// phantom 节点的函数值 = 对面基础节点的值，坐标 = 实际位置
-	// 这保证边界 cell 和对面 cell 使用相同函数值 → MC 三角化完全匹配
-	int Np = nx; // 基础节点数
+	// Periodic MC: nx^3 base nodes + boundary phantom nodes
+	// Phantom node function values = values of the corresponding base node on the opposite side; coordinates = actual positions
+	// This ensures boundary cells and opposite-side cells use the same function values, so MC triangulation matches exactly
+	int Np = nx; // number of base nodes
 	auto baseIdx = [Np](int i, int j, int k) {
 		return ((i%Np+Np)%Np) + Np * (((j%Np+Np)%Np) + Np * ((k%Np+Np)%Np));
 	};
-	// 基础节点（微扰避免隐函数在格点上精确为零导致 MC 退化）
+	// Base nodes (perturb to avoid the implicit function being exactly zero at grid points, which causes MC degeneration)
 	const double perturbEps = 1e-6 * std::min({dx, dy, dz});
 	std::vector<xtpms::LevelSetNode> nodes(static_cast<std::size_t>(Np*Np*Np));
 	for (int k=0; k<nz; ++k)
@@ -470,7 +470,7 @@ static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
 				nodes[static_cast<std::size_t>(baseIdx(i,j,k))] =
 					{i*dx, j*dy, k*dz, val};
 			}
-	// 为边界 cell 创建 phantom 节点（坐标在 [L, L+dx]，函数值 = 对面）
+	// Create phantom nodes for boundary cells (coordinates in [L, L+dx], function values = opposite side)
 	std::map<std::tuple<int,int,int>, int> phantomMap;
 	auto getNode = [&](int i, int j, int k) -> int {
 		bool phantom = (i >= nx || j >= ny || k >= nz);
@@ -502,8 +502,8 @@ static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
 }
 
 static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, const Vec3d& hp) {
-	// MC 输出的周期边界顶点完全匹配（平移一个周期后重合）
-	// 直接 wrap 到 [0, L) + 哈希去重即可，不需要投影/split
+	// MC output periodic boundary vertices match exactly (coincide after translating by one period)
+	// Simply wrap to [0, L) + hash-based deduplication; no projection/split needed
 	const double L[3] = {
 		2.0 * static_cast<double>(hp[0]),
 		2.0 * static_cast<double>(hp[1]),
@@ -511,7 +511,7 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 	};
 
 	const std::size_t nv = src.n_vertices();
-	// wrap 顶点到 [0, L)
+	// Wrap vertices to [0, L)
 	std::vector<std::array<double, 3>> wpos(nv);
 	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
 		auto p = src.point(*v);
@@ -525,8 +525,8 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 		}
 	}
 
-	// 哈希去重：量化坐标到 grid，合并相同 cell 的顶点
-	const double res = 1e-5; // 量化分辨率
+	// Hash-based deduplication: quantize coordinates to grid, merge vertices in the same cell
+	const double res = 1e-5; // quantization resolution
 	struct GridKey {
 		int64_t x, y, z;
 		bool operator==(const GridKey& o) const { return x==o.x && y==o.y && z==o.z; }
@@ -555,7 +555,7 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 		}
 	}
 
-	// 构建 PeriodicTriMesh
+	// Build PeriodicTriMesh
 	xtpms::PeriodicTriMesh mesh;
 	mesh.setHalfPeriod(hp);
 	std::vector<xtpms::PeriodicTriMesh::VertexHandle> vh(uniqueVerts.size());
@@ -565,7 +565,7 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 			static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][1]),
 			static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][2])));
 	}
-	// 去重复面：weld 后不同原始面可能映射到相同三顶点
+	// Deduplicate faces: after welding, different original faces may map to the same three vertices
 	std::set<std::array<int,3>> faceSet;
 	for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
 		auto fv = src.cfv_iter(*f);
@@ -573,10 +573,10 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 		int b = vmap[static_cast<std::size_t>((*fv).idx())]; ++fv;
 		int c = vmap[static_cast<std::size_t>((*fv).idx())];
 		if (a == b || b == c || a == c) continue;
-		// 规范化面（最小顶点在前）用于去重
+		// Canonicalize face (smallest vertex first) for deduplication
 		std::array<int,3> key = {a, b, c};
 		std::sort(key.begin(), key.end());
-		if (!faceSet.insert(key).second) continue; // 重复面
+		if (!faceSet.insert(key).second) continue; // duplicate face
 		auto fh = mesh.add_face(vh[static_cast<std::size_t>(a)],
 								vh[static_cast<std::size_t>(b)],
 								vh[static_cast<std::size_t>(c)]);
@@ -781,7 +781,7 @@ int main(int argc, char** argv) {
 	if (cmdP->parsed()) return cmdPeriodize(pz_in, pz_out, hpStr, pz_nosplit);
 	if (cmdC->parsed()) return cmdCompute(cp_in, hpStr);
 	if (cmdO->parsed() || cmdG->parsed()) {
-		if (cmdG->parsed()) o_obj = "apac";  // generate 固定 apac 目标
+		if (cmdG->parsed()) o_obj = "apac";  // generate always uses apac objective
 		int surgStart = (o_surgStart < 0) ? std::min(o_iter / 3, 20) : o_surgStart;
 		return cmdOptimize(o_in, o_out, hpStr, o_obj, o_iter, o_step,
 						   o_mcf, o_prec, o_aeps, !o_nosurg, surgStart,

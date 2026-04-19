@@ -59,7 +59,7 @@ double computeCotWeight(const PeriodicTriMesh& mesh, EH eh) {
 	return cot_sum / 2.0;
 }
 
-// 获取面的三个顶点坐标（周期包装到 v0 附近），返回 3x3 矩阵（列为顶点）
+// Get the three vertex coordinates of a face (periodically wrapped near v0), return a 3x3 matrix (columns are vertices)
 Eigen::Matrix3d getFacePeriodTri(const PeriodicTriMesh& mesh, FH fh) {
 	const Vec3d hp = mesh.halfPeriod();
 	auto fv = mesh.cfv_iter(fh);
@@ -79,7 +79,7 @@ void getFaceVertexIdx(const PeriodicTriMesh& mesh, FH fh, int idx[3]) {
 	idx[2] = (*fv).idx();
 }
 
-// 获取顶点的周期 1-ring 邻域（通过面遍历保证 CCW 顺序）
+// Get the periodic 1-ring neighborhood of a vertex (face traversal ensures CCW order)
 void getPeriodicRing(const PeriodicTriMesh& mesh, VH vh,
 					 Eigen::Vector3d& outCenter, std::vector<Eigen::Vector3d>& outRing) {
 	const Vec3d hp = mesh.halfPeriod();
@@ -94,7 +94,7 @@ void getPeriodicRing(const PeriodicTriMesh& mesh, VH vh,
 		return;
 	}
 
-	// 面遍历保证 CCW 顺序
+	// Face traversal ensures CCW order
 	HH he_start = mesh.halfedge_handle(vh);
 	HH he = he_start;
 	do {
@@ -121,10 +121,10 @@ Compile1ring::Compile1ring(const Eigen::Vector3d& o, const std::vector<Eigen::Ve
 		esq_opp[static_cast<std::size_t>(i)] = (ring[static_cast<std::size_t>((i + 1) % N)] - ring[static_cast<std::size_t>(i)]).squaredNorm();
 	}
 
-	// 预计算所有角的余切（和 minsurf Compile1ring 对齐）
-	// 三角形 i = (o, ring[i], ring[i+1])
-	// cotA_i = cot(angle at ring[i])   → 存到 cot_alpha[(i+1)%N]
-	// cotB_i = cot(angle at ring[i+1]) → 存到 cot_beta[i]
+	// Precompute cotangents of all angles (aligned with minsurf Compile1ring)
+	// Triangle i = (o, ring[i], ring[i+1])
+	// cotA_i = cot(angle at ring[i])   -> stored in cot_alpha[(i+1)%N]
+	// cotB_i = cot(angle at ring[i+1]) -> stored in cot_beta[i]
 	std::vector<double> cot_alpha(static_cast<std::size_t>(N), 0.0);
 	std::vector<double> cot_beta(static_cast<std::size_t>(N), 0.0);
 	std::vector<double> theta_v(static_cast<std::size_t>(N), 0.0);
@@ -162,16 +162,16 @@ Compile1ring::Compile1ring(const Eigen::Vector3d& o, const std::vector<Eigen::Ve
 		Eigen::Vector3d axb = a.cross(b);
 		double axb_norm = axb.norm();
 
-		// 角度加权法向
+		// Angle-weighted normal
 		if (axb_norm > 1e-15) nv += (axb / axb_norm) * theta_v[static_cast<std::size_t>(i)];
 
-		// 均曲向量：用对角余切权（和 minsurf 对齐）
-		// 边 (o, ring[i]) 的权重 = (cot_alpha[i] + cot_beta[i]) / 2
-		// cot_alpha[i] = cot at ring[i-1] (在三角形 i-1 中)
-		// cot_beta[i]  = cot at ring[i+1] (在三角形 i 中)
+		// Mean curvature vector: using opposite-angle cotangent weights (aligned with minsurf)
+		// Weight of edge (o, ring[i]) = (cot_alpha[i] + cot_beta[i]) / 2
+		// cot_alpha[i] = cot at ring[i-1] (in triangle i-1)
+		// cot_beta[i]  = cot at ring[i+1] (in triangle i)
 		Hv += (cot_alpha[static_cast<std::size_t>(i)] + cot_beta[static_cast<std::size_t>(i)]) / 2.0 * a;
 
-		// Voronoi 面积（用当前三角形的 cotA, cotB）
+		// Voronoi area (using cotA, cotB of the current triangle)
 		double cotA = cot_alpha[static_cast<std::size_t>((i + 1) % N)];
 		double cotB = cot_beta[static_cast<std::size_t>(i)];
 		if (e_sq0 + e_sq1 >= e_sq2 && e_sq1 + e_sq2 >= e_sq0 && e_sq2 + e_sq0 >= e_sq1) {
@@ -334,7 +334,7 @@ VertexGeometry computeVertexGeometry(const PeriodicTriMesh& mesh) {
 	g.vertexAreas.setZero();
 	g.vertexNormals.resize(nv, Eigen::Vector3d::Zero());
 
-	// 计算 1-ring（用于 sensitivity 和法向）
+	// Compute 1-ring (used for sensitivity and normals)
 	g.vrings.resize(nv);
 	for (std::size_t vid = 0; vid < nv; ++vid) {
 		VH vh(static_cast<int>(vid));
@@ -463,7 +463,7 @@ Eigen::Matrix3d solveAsymptoticConductivity(
 }
 
 // ══════════════════════════════════════════════════════════════
-// computeSensitivity（完整版，含第二基本形式）
+// computeSensitivity (full version, including second fundamental form)
 // ══════════════════════════════════════════════════════════════
 
 SensitivityResult computeSensitivity(
@@ -479,54 +479,54 @@ SensitivityResult computeSensitivity(
 		int idx[3];
 		getFaceVertexIdx(mesh, *f_it, idx);
 
-		// 周期包装后的三角形
+		// Periodically wrapped triangle
 		Eigen::Matrix3d tri = getFacePeriodTri(mesh, *f_it);
 
-		// 面局部坐标系
+		// Face local coordinate frame
 		Eigen::Matrix3d fr = faceFrame(tri);
 		double A = fr.col(2).norm(); // = area
 		if (A < 1e-20) continue;
 
-		// 取三个顶点的 1-ring 数据
+		// Get 1-ring data for the three vertices
 		Compile1ring vring[3] = {
 			geom.vrings[static_cast<std::size_t>(idx[0])],
 			geom.vrings[static_cast<std::size_t>(idx[1])],
 			geom.vrings[static_cast<std::size_t>(idx[2])]
 		};
 
-		// 第二基本形式
+		// Second fundamental form
 		Eigen::Vector3d be = secondFundamentalFormEdge(tri, vring[0], vring[1], vring[2]);
 		Eigen::Matrix3d Bn = strainMatrixEdgeStretch(tri, fr.col(0), fr.col(1));
 		Eigen::Vector3d bformVoigt = Bn * be;
-		Eigen::Matrix2d bform = fromVoigt3(bformVoigt); // 2x2 第二基本形式
+		Eigen::Matrix2d bform = fromVoigt3(bformVoigt); // 2x2 second fundamental form
 
-		// 标量梯度矩阵 2x3
+		// Scalar gradient matrix 2x3
 		Eigen::Matrix<double, 2, 3> G = scalarGradientMatrix(tri, fr);
 
-		// u 在面顶点的值
+		// Values of u at face vertices
 		Eigen::Matrix3d ue;
 		ue.row(0) = ulist.row(idx[0]);
 		ue.row(1) = ulist.row(idx[1]);
 		ue.row(2) = ulist.row(idx[2]);
 
-		// grad u 在局部坐标系下 2x3
+		// grad u in local coordinate frame, 2x3
 		Eigen::Matrix<double, 2, 3> gu = G * ue;
 
 		// P_w = [t1, t2]^T 2x3
 		Eigen::Matrix<double, 2, 3> pw = fr.leftCols<2>().transpose();
 
-		// 均曲率
+		// Mean curvature
 		double H = bform.trace() / 2.0;
 		Eigen::Matrix2d eye = Eigen::Matrix2d::Identity();
 
-		// 敏感度张量: (gu + pw)^T * (bform - H*I) * (gu + pw)
+		// Sensitivity tensor: (gu + pw)^T * (bform - H*I) * (gu + pw)
 		Eigen::Matrix3d sens_ij = (gu + pw).transpose() * (bform - H * eye) * (gu + pw);
 
-		// 单点积分：每个顶点分配 1/3
+		// Single-point quadrature: each vertex receives 1/3
 		Eigen::Vector<double, 6> sv = toVoigt(2.0 * sens_ij * A / 3.0);
 		sv.tail<3>() /= 2.0; // Voigt shear scaling
 
-		// 面积导数
+		// Area derivative
 		Eigen::Vector3d dAdv = areaShapeDerivative(tri, fr, vring);
 
 		for (int k = 0; k < 3; ++k) {
@@ -535,8 +535,8 @@ SensitivityResult computeSensitivity(
 		}
 	}
 
-	// 注意：不在这里除以顶点面积，由 tailorADC 中统一处理
-	// （与 minsurf 一致：asym_cond_sensitivity 返回累加值）
+	// Note: do not divide by vertex area here; handled uniformly in tailorADC
+	// (consistent with minsurf: asym_cond_sensitivity returns accumulated values)
 
 	return result;
 }
@@ -636,7 +636,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 	RemeshOptions remeshOpts = opts.remeshOpts;
 	if (opts.enableRemesh && remeshOpts.targetLength < 0) {
 		remeshOpts = defaultRemeshOptions(mesh);
-		// 保留用户设置的非默认参数
+		// Preserve user-specified non-default parameters
 		if (opts.remeshOpts.outerIter != 1) remeshOpts.outerIter = opts.remeshOpts.outerIter;
 		if (opts.remeshOpts.innerIter != 5) remeshOpts.innerIter = opts.remeshOpts.innerIter;
 		if (opts.remeshOpts.adaptiveEps != 0.6) remeshOpts.adaptiveEps = opts.remeshOpts.adaptiveEps;
@@ -644,7 +644,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				  << " minLength = " << remeshOpts.minLength << "\n";
 	}
 
-	// Sanity check helper: nfLimit < 0 不检查面数上限
+	// Sanity check helper: nfLimit < 0 means no upper limit on face count
 	auto meshSanityCheck = [&](const char* stage, int nfLimit) -> std::string {
 		const int nv = static_cast<int>(mesh.n_vertices());
 		const int nf = static_cast<int>(mesh.n_faces());
@@ -667,20 +667,20 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		return "";
 	};
 
-	// 保存最优迭代的网格，在优化末期网格退化时可回退到此
+	// Save the mesh from the best iteration; can roll back to it if mesh degenerates late in optimization
 	PeriodicTriMesh bestMesh;
 	double bestObjValue = -std::numeric_limits<double>::infinity();
 	bool haveBest = false;
 	auto saveBest = [&](double objVal, const Eigen::Matrix3d& kA) {
-		// 物理有效性检查：APAC=kA_trace/3 ∈ [0, 1]，每个对角元也应在 [0, 1]
-		// 超出范围通常是 sliver 三角形让 L 非 PSD 导致的数值假象，拒绝采纳
+		// Physical validity check: APAC=kA_trace/3 should be in [0, 1], each diagonal element should also be in [0, 1]
+		// Out-of-range values are typically numerical artifacts from sliver triangles making L non-PSD; reject them
 		if (objVal <= 0 || objVal >= 1.0) return;
 		for (int i = 0; i < 3; ++i) {
 			if (kA(i, i) < -1e-6 || kA(i, i) > 1.0 + 1e-6) return;
 		}
 		if (objVal > bestObjValue) {
 			bestObjValue = objVal;
-			bestMesh = mesh;   // OpenMesh 深拷贝
+			bestMesh = mesh;   // OpenMesh deep copy
 			haveBest = true;
 		}
 	};
@@ -697,8 +697,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			if (mesh.surgery(opts.surgeryOpts)) {
 				mesh.garbage_collection();
 				mesh.removeNonPeriodicIslands();
-				// 严格保证单连通：避免 FEM Laplacian 零空间多维导致
-				// kA 解病态（观察到 kA 对角为负）
+				// Strictly ensure single connected component: avoid multi-dimensional null space
+				// of FEM Laplacian causing ill-conditioned kA solution (negative kA diagonals observed)
 				int removed = mesh.keepLargestComponent();
 				if (removed > 0)
 					std::cout << "surgery: removed " << removed << " residual component(s)\n";
@@ -721,7 +721,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				if (mesh.is_boundary(*e_it)) hasBoundary = true;
 			}
 			if (hasBoundary) mesh.mergePeriodBoundary();
-			// 清理孤立顶点
+			// Clean up isolated vertices
 			{
 				mesh.request_vertex_status();
 				bool cleaned = false;
@@ -732,7 +732,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		}
 
 		// [2.5] sanity check after surgery/remesh
-		// iter=0 时不检查 nf 上限，接受高密度初始 seed
+		// At iter=0, do not check nf upper limit; accept high-density initial seed
 		{
 			int nfLimit = (iter == 0) ? -1 : opts.nfLimit;
 			auto err = meshSanityCheck("after remesh", nfLimit);
@@ -777,9 +777,9 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		// [7] sensitivity
 		auto sens = computeSensitivity(mesh, geom, ulist);
 
-		// [8] gradient（与 minsurf 一致：先除 vertex area，再除 As）
+		// [8] gradient (consistent with minsurf: first divide by vertex area, then divide by As)
 		double As = geom.vertexAreas.sum();
-		// 除以顶点面积（从面积密度到每顶点值）
+		// Divide by vertex area (from area density to per-vertex value)
 		for (int i = 0; i < nv; ++i) {
 			double ai = geom.vertexAreas[i];
 			if (ai > 1e-15) {
@@ -869,32 +869,32 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			step = std::min(step, faceStep);
 		}
 
-		// [11] 回溯线搜索：尝试步长，求解 ADC，检查目标是否改善
+		// [11] Backtracking line search: try step sizes, solve ADC, check if objective improves
 		{
-			// 保存当前顶点位置
+			// Save current vertex positions
 			std::vector<Vec3d> savedPos(static_cast<std::size_t>(nv));
 			for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it)
 				savedPos[static_cast<std::size_t>((*v_it).idx())] = mesh.point(*v_it);
 
 			for (int ls = 0; ls < 15; ++ls) {
-				// 试探位移
+				// Trial displacement
 				for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 					VH vh = *v_it;
 					Eigen::Vector3d p = toEig(savedPos[static_cast<std::size_t>(vh.idx())]);
 					p += step * stepVec[static_cast<std::size_t>(vh.idx())];
 					mesh.set_point(vh, toOM(p));
 				}
-				// 评估目标
+				// Evaluate objective
 				auto trialGeom = computeVertexGeometry(mesh);
 				Eigen::MatrixX3d trialU;
 				Eigen::Matrix3d trialKA = solveAsymptoticConductivity(mesh, trialGeom, trialU);
 				ADCObjective trialObj = evaluateADCObjective(opts.objectiveType, trialKA);
 
 				if (!std::isnan(trialObj.value) && trialObj.value > obj.value) {
-					// 接受此步长
+					// Accept this step size
 					break;
 				}
-				// 恢复并缩小步长
+				// Restore and reduce step size
 				for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it)
 					mesh.set_point(*v_it, savedPos[static_cast<std::size_t>((*v_it).idx())]);
 				if (ls >= 10) break; // give up, keep original positions
@@ -902,7 +902,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			}
 		}
 
-		// [11.5] post-displacement sanity check（iter=0 不限 nf，接受高密度初始网格）
+		// [11.5] post-displacement sanity check (iter=0 has no nf limit; accept high-density initial mesh)
 		{
 			int nfLim = (iter == 0) ? -1 : opts.nfLimit;
 			auto err = meshSanityCheck("after displacement", nfLim);

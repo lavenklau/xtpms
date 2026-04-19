@@ -211,9 +211,7 @@ double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh,
 
 } // namespace
 
-// ══════════════════════════════════════════════════════════════
-// delaunayRemesh (strictly following the minsurf procedure)
-// ══════════════════════════════════════════════════════════════
+// ── delaunayRemesh (strictly following the minsurf procedure) ──
 
 void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	mesh.request_vertex_status();

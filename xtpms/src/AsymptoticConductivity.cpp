@@ -29,9 +29,7 @@ Eigen::Matrix3d faceFrame(const Eigen::Matrix3d& tri) {
 	return fr;
 }
 
-// ══════════════════════════════════════════════════════════════
-// secondFundamentalFormEdge
-// ══════════════════════════════════════════════════════════════
+// ── secondFundamentalFormEdge ──────────────────────────────
 
 Eigen::Vector3d secondFundamentalFormEdge(
 	const Eigen::Matrix3d& tri,
@@ -43,9 +41,7 @@ Eigen::Vector3d secondFundamentalFormEdge(
 	return Eigen::Vector3d(be12, be23, be31);
 }
 
-// ══════════════════════════════════════════════════════════════
-// strainMatrixEdgeStretch
-// ══════════════════════════════════════════════════════════════
+// ── strainMatrixEdgeStretch ────────────────────────────────
 
 Eigen::Matrix3d strainMatrixEdgeStretch(
 	const Eigen::Matrix3d& tri,
@@ -69,9 +65,7 @@ Eigen::Matrix3d strainMatrixEdgeStretch(
 	return A.inverse();
 }
 
-// ══════════════════════════════════════════════════════════════
-// areaShapeDerivative
-// ══════════════════════════════════════════════════════════════
+// ── areaShapeDerivative ───────────────────────────────────
 
 Eigen::Vector3d areaShapeDerivative(
 	const Eigen::Matrix3d& tri, const Eigen::Matrix3d& fr,
@@ -84,9 +78,7 @@ Eigen::Vector3d areaShapeDerivative(
 	return Eigen::Vector3d(-H2 * A / 3.0, -H2 * A / 3.0, -H2 * A / 3.0);
 }
 
-// ══════════════════════════════════════════════════════════════
-// Voigt
-// ══════════════════════════════════════════════════════════════
+// ── Voigt ─────────────────────────────────────────────────
 
 Eigen::Vector<double, 6> toVoigt(const Eigen::Matrix3d& M) {
 	Eigen::Vector<double, 6> v;
@@ -118,9 +110,7 @@ Eigen::Matrix2d fromVoigt3(const Eigen::Vector3d& v) {
 	return M;
 }
 
-// ══════════════════════════════════════════════════════════════
-// scalarGradientMatrix
-// ══════════════════════════════════════════════════════════════
+// ── scalarGradientMatrix ──────────────────────────────────
 
 Eigen::Matrix<double, 2, 3> scalarGradientMatrix(
 	const Eigen::Matrix3d& tri, const Eigen::Matrix3d& fr) {
@@ -156,9 +146,7 @@ Eigen::MatrixX3d assembleRHS(
 	return blist;
 }
 
-// ══════════════════════════════════════════════════════════════
-// evaluateConductivityTensor
-// ══════════════════════════════════════════════════════════════
+// ── evaluateConductivityTensor ─────────────────────────────
 
 Eigen::Matrix3d evaluateConductivityTensor(
 	const PeriodicTriMesh& mesh,
@@ -186,9 +174,7 @@ Eigen::Matrix3d evaluateConductivityTensor(
 	return kA;
 }
 
-// ══════════════════════════════════════════════════════════════
-// solveAsymptoticConductivity
-// ══════════════════════════════════════════════════════════════
+// ── solveAsymptoticConductivity ────────────────────────────
 
 Eigen::Matrix3d solveAsymptoticConductivity(
 	PeriodicTriMesh& mesh,
@@ -216,9 +202,7 @@ Eigen::Matrix3d solveAsymptoticConductivity(
 	return evaluateConductivityTensor(mesh, blist, outU, As);
 }
 
-// ══════════════════════════════════════════════════════════════
-// computeSensitivity (full version, including second fundamental form)
-// ══════════════════════════════════════════════════════════════
+// ── computeSensitivity (full version, including second fundamental form) ──
 
 SensitivityResult computeSensitivity(
 	const PeriodicTriMesh& mesh,
@@ -295,9 +279,7 @@ SensitivityResult computeSensitivity(
 	return result;
 }
 
-// ══════════════════════════════════════════════════════════════
-// evaluateADCObjective
-// ══════════════════════════════════════════════════════════════
+// ── evaluateADCObjective ──────────────────────────────────
 
 ADCObjective evaluateADCObjective(const std::string& type, const Eigen::Matrix3d& kA) {
 	ADCObjective obj;
@@ -338,9 +320,7 @@ ADCObjective evaluateADCObjective(const std::string& type, const Eigen::Matrix3d
 	return obj;
 }
 
-// ══════════════════════════════════════════════════════════════
-// ConvergenceChecker
-// ══════════════════════════════════════════════════════════════
+// ── ConvergenceChecker ────────────────────────────────────
 
 bool ConvergenceChecker::operator()(double obj, double step) {
 	objHistory.push_back(obj);
@@ -380,9 +360,7 @@ double ConvergenceChecker::estimateNextStep(double tmax) const {
 	return std::min(tmax, std::abs(stepHistory.back()) * 1.5 + 0.01);
 }
 
-// ══════════════════════════════════════════════════════════════
-// tailorADC
-// ══════════════════════════════════════════════════════════════
+// ── tailorADC ─────────────────────────────────────────────
 
 void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 	ConvergenceChecker conv(opts.convergeTol, opts.stepTol * opts.maxStep, opts.preconditionStrength);

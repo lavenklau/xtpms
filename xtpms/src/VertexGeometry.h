@@ -24,6 +24,11 @@ DefaultTriMesh::Point makePeriod(const DefaultTriMesh::Point& v,
 Eigen::Vector3d toEig(const DefaultTriMesh::Point& v);
 DefaultTriMesh::Point toOM(const Eigen::Vector3d& v);
 
+// Compute the periodic edge vector from v0 to v1.
+Eigen::Vector3d periodicEdgeVec(const PeriodicTriMesh& mesh,
+                                PeriodicTriMesh::VertexHandle v0,
+                                PeriodicTriMesh::VertexHandle v1);
+
 // Get the three vertex coordinates of a face, periodically wrapped near v0.
 // Returns a 3x3 matrix with columns = vertex positions.
 Eigen::Matrix3d getFacePeriodTri(const PeriodicTriMesh& mesh,

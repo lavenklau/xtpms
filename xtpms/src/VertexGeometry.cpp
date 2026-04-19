@@ -35,6 +35,10 @@ Vec3d toOM(const Eigen::Vector3d& v) {
 				 static_cast<DefaultTriMesh::Scalar>(v[2]));
 }
 
+Eigen::Vector3d periodicEdgeVec(const PeriodicTriMesh& mesh, VH v0, VH v1) {
+	return toEig(makePeriod(mesh.point(v1) - mesh.point(v0), mesh.halfPeriod()));
+}
+
 Eigen::Matrix3d getFacePeriodTri(const PeriodicTriMesh& mesh, FH fh) {
 	const Vec3d hp = mesh.halfPeriod();
 	auto fv = mesh.cfv_iter(fh);

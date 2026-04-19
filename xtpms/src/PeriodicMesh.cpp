@@ -1098,7 +1098,7 @@ void PeriodicTriMesh::periodShift() {
 // 找跨周期边界的边，在边界面处 split
 // ──────────────────────────────────────────────────────────────────────────
 
-void PeriodicTriMesh::splitUnitCell() {
+void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 	this->request_vertex_status();
 	this->request_edge_status();
 	this->request_halfedge_status();
@@ -1114,56 +1114,58 @@ void PeriodicTriMesh::splitUnitCell() {
 	const double L[3] = { 2.0 * hp[0], 2.0 * hp[1], 2.0 * hp[2] };
 
 	// ── Phase 1: 在周期边界处 split 跨界边 ──
-	for (int axis = 0; axis < 3; ++axis) {
-		std::vector<EdgeHandle> toSplit;
-		for (auto e_it = this->edges_begin(); e_it != this->edges_end(); ++e_it) {
-			if (this->status(*e_it).deleted()) continue;
-			HalfedgeHandle he = this->halfedge_handle(*e_it, 0);
-			Vec3d p0 = this->point(this->from_vertex_handle(he));
-			Vec3d p1 = p0 + wrapVector(this->point(this->to_vertex_handle(he)) - p0);
+	if (doSplitEdges) {
+		for (int axis = 0; axis < 3; ++axis) {
+			std::vector<EdgeHandle> toSplit;
+			for (auto e_it = this->edges_begin(); e_it != this->edges_end(); ++e_it) {
+				if (this->status(*e_it).deleted()) continue;
+				HalfedgeHandle he = this->halfedge_handle(*e_it, 0);
+				Vec3d p0 = this->point(this->from_vertex_handle(he));
+				Vec3d p1 = p0 + wrapVector(this->point(this->to_vertex_handle(he)) - p0);
 
-			double a0 = static_cast<double>(p0[axis]);
-			double a1 = static_cast<double>(p1[axis]);
+				double a0 = static_cast<double>(p0[axis]);
+				double a1 = static_cast<double>(p1[axis]);
 
-			if (std::abs(a0) < 1e-5 || std::abs(a0 - L[axis]) < 1e-5) continue;
-			if (std::abs(a1) < 1e-5 || std::abs(a1 - L[axis]) < 1e-5) continue;
-			if (a1 < -1e-5 || a1 > L[axis] + 1e-5) toSplit.push_back(*e_it);
-		}
-
-		for (auto eh : toSplit) {
-			if (!eh.is_valid() || this->status(eh).deleted()) continue;
-			HalfedgeHandle he = this->halfedge_handle(eh, 0);
-			VertexHandle vFrom = this->from_vertex_handle(he);
-			VertexHandle vTo = this->to_vertex_handle(he);
-			Vec3d p0 = this->point(vFrom);
-			Vec3d p1 = p0 + wrapVector(this->point(vTo) - p0);
-			double a0 = static_cast<double>(p0[axis]);
-			double a1 = static_cast<double>(p1[axis]);
-			double cut = (a1 > L[axis]) ? L[axis] : 0.0;
-			double denom = a1 - a0;
-			if (std::abs(denom) < 1e-15) continue;
-			double t = (cut - a0) / denom;
-			if (t <= 0.01) {
-				// split 点太靠近 from 端 → snap from 到边界
-				auto pp = this->point(vFrom);
-				pp[axis] = static_cast<DefaultTriMesh::Scalar>(cut);
-				this->set_point(vFrom, pp);
-			} else if (t >= 0.99) {
-				// split 点太靠近 to 端 → snap to 到边界
-				auto pp = this->point(vTo);
-				pp[axis] = static_cast<DefaultTriMesh::Scalar>(cut);
-				this->set_point(vTo, pp);
-			} else {
-				Vec3d c;
-				for (int k = 0; k < 3; ++k)
-					c[k] = static_cast<DefaultTriMesh::Scalar>(
-						(1.0 - t) * static_cast<double>(p0[k]) + t * static_cast<double>(p1[k]));
-				this->split(eh, c);
+				if (std::abs(a0) < 1e-5 || std::abs(a0 - L[axis]) < 1e-5) continue;
+				if (std::abs(a1) < 1e-5 || std::abs(a1 - L[axis]) < 1e-5) continue;
+				if (a1 < -1e-5 || a1 > L[axis] + 1e-5) toSplit.push_back(*e_it);
 			}
+
+			for (auto eh : toSplit) {
+				if (!eh.is_valid() || this->status(eh).deleted()) continue;
+				HalfedgeHandle he = this->halfedge_handle(eh, 0);
+				VertexHandle vFrom = this->from_vertex_handle(he);
+				VertexHandle vTo = this->to_vertex_handle(he);
+				Vec3d p0 = this->point(vFrom);
+				Vec3d p1 = p0 + wrapVector(this->point(vTo) - p0);
+				double a0 = static_cast<double>(p0[axis]);
+				double a1 = static_cast<double>(p1[axis]);
+				double cut = (a1 > L[axis]) ? L[axis] : 0.0;
+				double denom = a1 - a0;
+				if (std::abs(denom) < 1e-15) continue;
+				double t = (cut - a0) / denom;
+				if (t <= 1e-6) {
+					// split 点几乎重合 from 端 → snap from 到边界
+					auto pp = this->point(vFrom);
+					pp[axis] = static_cast<DefaultTriMesh::Scalar>(cut);
+					this->set_point(vFrom, pp);
+				} else if (t >= 1.0 - 1e-6) {
+					// split 点几乎重合 to 端 → snap to 到边界
+					auto pp = this->point(vTo);
+					pp[axis] = static_cast<DefaultTriMesh::Scalar>(cut);
+					this->set_point(vTo, pp);
+				} else {
+					Vec3d c;
+					for (int k = 0; k < 3; ++k)
+						c[k] = static_cast<DefaultTriMesh::Scalar>(
+							(1.0 - t) * static_cast<double>(p0[k]) + t * static_cast<double>(p1[k]));
+					this->split(eh, c);
+				}
+			}
+			periodShift();
 		}
-		periodShift();
+		this->garbage_collection();
 	}
-	this->garbage_collection();
 
 	// ── Phase 2: dupPeriodFaces（对齐 minsurf）──
 	// 按边展开跨周期面，复制偏移顶点，使所有面在 [0, L] 内
@@ -1270,11 +1272,12 @@ void PeriodicTriMesh::splitUnitCell() {
 // saveUnitCell
 // ──────────────────────────────────────────────────────────────────────────
 
-bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split) const {
+bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split,
+								   bool splitEdges) const {
 	if (split) {
 		// 复制网格，splitUnitCell 后直接写出
 		PeriodicTriMesh copy = *this;
-		copy.splitUnitCell();
+		copy.splitUnitCell(splitEdges);
 		return OpenMesh::IO::write_mesh(copy, filename);
 	}
 	// 不 split：periodShift 后直接写出

@@ -140,6 +140,8 @@ struct TailorADCOptions {
 	int surgeryStartIter{0};  // 从第几步开始允许 surgery
 	SurgeryOptions surgeryOpts;
 
+	int nfLimit{100000};      // 面数上限（超过则中止），<= 0 不限制
+
 	std::string outputDir;    // 非空时输出中间结果
 	int saveInterval{50};     // 每 N 步保存一次
 };

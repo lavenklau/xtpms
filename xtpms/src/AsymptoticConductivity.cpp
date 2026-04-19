@@ -644,9 +644,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				  << " minLength = " << remeshOpts.minLength << "\n";
 	}
 
-	// Sanity check helper: returns error message or empty string if OK
-	// nfLimit < 0 时不检查面数上限（用于 iter=0 接受高密度初始网格）
-	auto meshSanityCheck = [&](const char* stage, int nfLimit = 100000) -> std::string {
+	// Sanity check helper: nfLimit < 0 不检查面数上限
+	auto meshSanityCheck = [&](const char* stage, int nfLimit) -> std::string {
 		const int nv = static_cast<int>(mesh.n_vertices());
 		const int nf = static_cast<int>(mesh.n_faces());
 		if (nf == 0 || nv == 0)
@@ -735,7 +734,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		// [2.5] sanity check after surgery/remesh
 		// iter=0 时不检查 nf 上限，接受高密度初始 seed
 		{
-			int nfLimit = (iter == 0) ? -1 : 50000;
+			int nfLimit = (iter == 0) ? -1 : opts.nfLimit;
 			auto err = meshSanityCheck("after remesh", nfLimit);
 			if (!err.empty()) {
 				std::cerr << "tailorADC abort: " << err << " at iter " << iter << "\n";
@@ -905,7 +904,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 
 		// [11.5] post-displacement sanity check（iter=0 不限 nf，接受高密度初始网格）
 		{
-			int nfLim = (iter == 0) ? -1 : 50000;
+			int nfLim = (iter == 0) ? -1 : opts.nfLimit;
 			auto err = meshSanityCheck("after displacement", nfLim);
 			if (!err.empty()) {
 				std::cerr << "tailorADC abort: " << err << " at iter " << iter << "\n";

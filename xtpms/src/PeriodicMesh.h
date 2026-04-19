@@ -129,13 +129,16 @@ public:
 	// 用于 surgery 后清理残留孤岛，避免 FEM Laplacian 零空间多维化。
 	int keepLargestComponent();
 
-	// 在周期边界处截断跨周期边（和 minsurf split_unit_cell 对齐）
-	// 截断后网格不再是周期闭合的（有边界边在周期面上）
-	void splitUnitCell();
+	// 在周期边界处截断跨周期边，截断后网格不再周期闭合。
+	// splitEdges=true: Phase 1 在边界处 split 边 + Phase 2 dupPeriodFaces
+	// splitEdges=false: 仅 Phase 2 dupPeriodFaces（避免 split 引入的凸起）
+	void splitUnitCell(bool splitEdges = true);
 
 	// 保存单元胞。split=true 时先复制网格做 splitUnitCell 再保存（默认），
 	// split=false 时用原始 unwrap 逻辑保存（不修改原网格）。
-	bool saveUnitCell(const std::string& filename, bool split = true) const;
+	// splitEdges 控制 splitUnitCell 是否执行 Phase 1 边分裂。
+	bool saveUnitCell(const std::string& filename, bool split = true,
+					  bool splitEdges = true) const;
 
 	// 拓扑手术：检测颈部奇异（高曲率），删除周围面，填洞，去除孤岛。
 	// 返回 true 表示执行了手术。

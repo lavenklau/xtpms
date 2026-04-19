@@ -337,12 +337,13 @@ int cmdCompute(const std::string& input, const std::string& hpStr) {
 int cmdOptimize(const std::string& input, const std::string& output,
 				const std::string& hpStr, const std::string& objective,
 				int maxIter, double maxStep, double mcfWeight,
-				double precondStrength, bool enableSurgery,
-				int surgeryStart, int surgeryInterval, double surgeryTol,
+				double precondStrength, double adaptiveEps,
+				bool enableSurgery, int surgeryStart, int surgeryInterval,
+				double surgeryTol, int nfLimit, double convergeTol,
 				bool noSplit, const std::string& outputDir) {
 	xtpms::PeriodicTriMesh mesh;
 	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
-	std::cout << "Input: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
+	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 
 	bool isBuiltin = (objective == "apac" || objective == "k00" ||
 					  objective == "k11" || objective == "k22" || objective == "iso");
@@ -353,13 +354,16 @@ int cmdOptimize(const std::string& input, const std::string& output,
 		opts.maxIter = maxIter;
 		opts.maxStep = maxStep;
 		opts.mcfWeight = mcfWeight;
+		opts.convergeTol = convergeTol;
+		opts.nfLimit = nfLimit;
 		opts.preconditionStrength = precondStrength;
 		opts.enableRemesh = true;
-		opts.remeshOpts.adaptiveEps = 1.0;
+		opts.remeshOpts.adaptiveEps = adaptiveEps;
 		opts.enableSurgery = enableSurgery;
 		opts.surgeryStartIter = surgeryStart;
 		opts.surgeryInterval = surgeryInterval;
 		opts.surgeryOpts.singularityTol = surgeryTol;
+		opts.surgeryOpts.surgeryType = 2;
 		opts.outputDir = outputDir;
 		if (!outputDir.empty()) opts.saveInterval = 1;
 		xtpms::tailorADC(mesh, opts);
@@ -371,7 +375,7 @@ int cmdOptimize(const std::string& input, const std::string& output,
 		std::cout << "Custom objective: " << objective << "\n";
 
 		xtpms::RemeshOptions remeshOpts;
-		remeshOpts.adaptiveEps = 1.0;
+		remeshOpts.adaptiveEps = adaptiveEps;
 
 		for (int iter = 0; iter < maxIter; ++iter) {
 			if (iter > 0) {
@@ -455,13 +459,17 @@ static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
 	auto baseIdx = [Np](int i, int j, int k) {
 		return ((i%Np+Np)%Np) + Np * (((j%Np+Np)%Np) + Np * ((k%Np+Np)%Np));
 	};
-	// 基础节点
+	// 基础节点（微扰避免隐函数在格点上精确为零导致 MC 退化）
+	const double perturbEps = 1e-6 * std::min({dx, dy, dz});
 	std::vector<xtpms::LevelSetNode> nodes(static_cast<std::size_t>(Np*Np*Np));
 	for (int k=0; k<nz; ++k)
 		for (int j=0; j<ny; ++j)
-			for (int i=0; i<nx; ++i)
+			for (int i=0; i<nx; ++i) {
+				double val = levelSet(i*dx, j*dy, k*dz);
+				if (std::abs(val) < perturbEps) val = perturbEps;
 				nodes[static_cast<std::size_t>(baseIdx(i,j,k))] =
-					{i*dx, j*dy, k*dz, levelSet(i*dx, j*dy, k*dz)};
+					{i*dx, j*dy, k*dz, val};
+			}
 	// 为边界 cell 创建 phantom 节点（坐标在 [L, L+dx]，函数值 = 对面）
 	std::map<std::tuple<int,int,int>, int> phantomMap;
 	auto getNode = [&](int i, int j, int k) -> int {
@@ -699,47 +707,6 @@ int cmdSample(const std::string& expression, const std::string& output,
 	return 0;
 }
 
-// ──────────────────────────────────────────────────────────
-// Subcommand: generate (seed mesh → optimize → TPMS)
-// ──────────────────────────────────────────────────────────
-
-int cmdGenerate(const std::string& input, const std::string& output,
-				const std::string& hpStr, int maxIter, bool noSplit,
-				const std::string& outputDir = "") {
-	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
-	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
-
-	// Optimize toward TPMS (maximize APAC)
-	xtpms::TailorADCOptions opts;
-	opts.objectiveType = "apac";
-	opts.maxIter = maxIter;
-	opts.maxStep = 1.0;
-	opts.mcfWeight = 0.1;
-	opts.enableRemesh = true;
-	opts.remeshOpts.adaptiveEps = 1.0;
-	opts.enableSurgery = true;
-	opts.surgeryStartIter = std::max(maxIter / 3, 20);
-	opts.surgeryInterval = 10;
-	// 对齐 minsurf 主流: surgery-tol=25 surgery-type=2
-	opts.surgeryOpts.singularityTol = 25.0;
-	opts.surgeryOpts.singularityRatio = 0.0;
-	opts.surgeryOpts.surgeryType = 2;
-	opts.outputDir = outputDir;
-	if (!outputDir.empty()) opts.saveInterval = 1;
-
-	xtpms::tailorADC(mesh, opts);
-
-	auto geom = xtpms::computeVertexGeometry(mesh);
-	Eigen::MatrixX3d u;
-	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
-	std::cout << "Final APAC = " << kA.trace() / 3.0 << "\n";
-	std::cout << "kA =\n" << kA << "\n";
-
-	saveMesh(mesh, output, noSplit);
-	std::cout << "Saved: " << output << "\n";
-	return 0;
-}
 
 // ──────────────────────────────────────────────────────────
 // Main
@@ -765,27 +732,34 @@ int main(int argc, char** argv) {
 	cmdC->add_option("-i,--input", cp_in, "Input OBJ")->required();
 	cmdC->add_option("--half-period", hpStr, "Half-period x,y,z");
 
-	// ── optimize ──
+	// ── optimize (also aliased as "generate") ──
 	auto* cmdO = app.add_subcommand("optimize", "Optimize surface conductivity");
+	auto* cmdG = app.add_subcommand("generate", "Alias for optimize --objective apac");
 	std::string o_in, o_out, o_obj="apac", o_dir;
-	int o_iter=100; double o_step=1, o_mcf=0.1, o_prec=0.1;
-	bool o_surg=false, o_nosplit=false;
-	int o_surgStart=40, o_surgInt=20; double o_surgTol=50;
-	cmdO->add_option("-i,--input", o_in, "Input OBJ")->required();
-	cmdO->add_option("-o,--output", o_out, "Output OBJ")->required();
-	cmdO->add_option("--half-period", hpStr);
+	int o_iter=100; double o_step=1.0, o_mcf=0.1, o_prec=0.1;
+	bool o_nosurg=false, o_nosplit=false;
+	int o_surgStart=-1, o_surgInt=4, o_nfLimit=100000;
+	double o_surgTol=25.0, o_ctol=1e-3, o_aeps=1.0;
 	cmdO->add_option("--objective", o_obj,
-		"apac|k00|k11|k22|iso or expression e.g. '(k00+k11+k22)/3'")->default_val("apac");
-	cmdO->add_option("--max-iter", o_iter)->default_val(100);
-	cmdO->add_option("--max-step", o_step)->default_val(1.0);
-	cmdO->add_option("--mcf-weight", o_mcf)->default_val(0.1);
-	cmdO->add_option("--precondition", o_prec)->default_val(0.1);
-	cmdO->add_flag("--surgery", o_surg, "Enable singularity surgery");
-	cmdO->add_option("--surgery-start", o_surgStart)->default_val(40);
-	cmdO->add_option("--surgery-interval", o_surgInt)->default_val(20);
-	cmdO->add_option("--surgery-tol", o_surgTol)->default_val(50);
-	cmdO->add_flag("--no-split", o_nosplit);
-	cmdO->add_option("--output-dir", o_dir, "Save intermediate meshes");
+		"apac|k00|k11|k22|iso or expression")->default_val("apac");
+	for (auto* cmd : {cmdO, cmdG}) {
+		cmd->add_option("-i,--input", o_in, "Input OBJ")->required();
+		cmd->add_option("-o,--output", o_out, "Output OBJ")->required();
+		cmd->add_option("--half-period", hpStr);
+		cmd->add_option("--max-iter", o_iter)->default_val(100);
+		cmd->add_option("--max-step", o_step)->default_val(1.0);
+		cmd->add_option("--mcf-weight", o_mcf)->default_val(0.1);
+		cmd->add_option("--precondition", o_prec)->default_val(0.1);
+		cmd->add_option("--adaptive-eps", o_aeps, "Curvature-adaptive remesh")->default_val(1.0);
+		cmd->add_flag("--no-surgery", o_nosurg, "Disable singularity surgery");
+		cmd->add_option("--surgery-start", o_surgStart, "Surgery start iter (-1=auto)")->default_val(-1);
+		cmd->add_option("--surgery-interval", o_surgInt)->default_val(4);
+		cmd->add_option("--surgery-tol", o_surgTol)->default_val(25.0);
+		cmd->add_option("--nf-limit", o_nfLimit, "Max face count before abort")->default_val(100000);
+		cmd->add_option("--converge-tol", o_ctol)->default_val(1e-3);
+		cmd->add_flag("--no-split", o_nosplit);
+		cmd->add_option("--output-dir", o_dir, "Save intermediate meshes");
+	}
 
 	// ── sample ──
 	auto* cmdS = app.add_subcommand("sample", "Sample isosurface from level set expression");
@@ -802,27 +776,18 @@ int main(int argc, char** argv) {
 	cmdS->add_option("--decay", s_decay, "Coefficient decay exponent for --random")->default_val(2.0);
 	cmdS->add_flag("--no-split", s_nosplit);
 
-	// ── generate ──
-	auto* cmdG = app.add_subcommand("generate", "Generate TPMS from seed mesh (auto period from bbox)");
-	std::string g_in, g_out;
-	int g_iter=100; bool g_nosplit=false;
-	cmdG->add_option("-i,--input", g_in, "Seed mesh OBJ")->required();
-	std::string g_hpStr;
-	cmdG->add_option("-o,--output", g_out, "Output OBJ")->required();
-	cmdG->add_option("--half-period", g_hpStr, "Target half-period (scale bbox to match)");
-	std::string g_dir;
-	cmdG->add_option("--max-iter", g_iter)->default_val(100);
-	cmdG->add_option("--output-dir", g_dir, "Save intermediate meshes");
-	cmdG->add_flag("--no-split", g_nosplit);
-
 	CLI11_PARSE(app, argc, argv);
 
 	if (cmdP->parsed()) return cmdPeriodize(pz_in, pz_out, hpStr, pz_nosplit);
 	if (cmdC->parsed()) return cmdCompute(cp_in, hpStr);
-	if (cmdO->parsed()) return cmdOptimize(o_in, o_out, hpStr, o_obj, o_iter, o_step,
-										   o_mcf, o_prec, o_surg, o_surgStart, o_surgInt,
-										   o_surgTol, o_nosplit, o_dir);
+	if (cmdO->parsed() || cmdG->parsed()) {
+		if (cmdG->parsed()) o_obj = "apac";  // generate 固定 apac 目标
+		int surgStart = (o_surgStart < 0) ? std::min(o_iter / 3, 20) : o_surgStart;
+		return cmdOptimize(o_in, o_out, hpStr, o_obj, o_iter, o_step,
+						   o_mcf, o_prec, o_aeps, !o_nosurg, surgStart,
+						   o_surgInt, o_surgTol, o_nfLimit, o_ctol,
+						   o_nosplit, o_dir);
+	}
 	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random, s_kmax, s_decay);
-	if (cmdG->parsed()) return cmdGenerate(g_in, g_out, g_hpStr, g_iter, g_nosplit, g_dir);
 	return 0;
 }

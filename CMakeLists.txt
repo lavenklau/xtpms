@@ -83,6 +83,7 @@ target_link_libraries(xtpms_headers INTERFACE OpenMeshCore)
 add_library(xtpms_core STATIC
     xtpms/src/PeriodicMesh.cpp
     xtpms/src/MarchingCubes.cpp
+    xtpms/src/VertexGeometry.cpp
     xtpms/src/PeriodicRemesh.cpp
     xtpms/src/AsymptoticConductivity.cpp
 )

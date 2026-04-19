@@ -1921,7 +1921,7 @@ TEST(Surgery, GyroidSurgerySmoke) {
 	for (auto& vr : geom.vrings) maxH = std::max(maxH, std::abs(vr.H));
 	std::cout << "after remesh: nv=" << mesh.n_vertices() << " maxH=" << maxH << "\n";
 
-	xtpms::PeriodicTriMesh::SurgeryOptions opts;
+	xtpms::SurgeryOptions opts;
 	opts.singularityTol = 25.0;
 	bool performed = mesh.surgery(opts);
 
@@ -1960,7 +1960,7 @@ TEST(Surgery, NeckMesh_SurgeryAndFill) {
 			  << " maxH=" << maxH << " bnd=" << countBoundaryEdges(mesh) << "\n";
 
 	// surgery（降低阈值触发颈部切除）
-	xtpms::PeriodicTriMesh::SurgeryOptions sopts;
+	xtpms::SurgeryOptions sopts;
 	sopts.singularityTol = 5.0;
 	bool performed = mesh.surgery(sopts);
 
@@ -1994,7 +1994,7 @@ TEST(Surgery, GyroidLowThreshold_SurgeryAndFill) {
 
 	mesh.saveUnitCell("surgery_before.obj");
 
-	xtpms::PeriodicTriMesh::SurgeryOptions opts;
+	xtpms::SurgeryOptions opts;
 	opts.singularityTol = 5.0;
 	bool performed = mesh.surgery(opts);
 

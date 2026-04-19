@@ -1,5 +1,5 @@
 #include "PeriodicRemesh.h"
-#include "AsymptoticConductivity.h"
+#include "VertexGeometry.h"
 
 #include <Eigen/Dense>
 #include <algorithm>
@@ -18,19 +18,7 @@ using EH = PeriodicTriMesh::EdgeHandle;
 using HH = PeriodicTriMesh::HalfedgeHandle;
 using FH = PeriodicTriMesh::FaceHandle;
 
-// Periodic wrapping: map a difference vector into [-hp, hp)
-Vec3d makePeriod(const Vec3d& v, const Vec3d& hp) {
-	Vec3d out = v;
-	for (int i = 0; i < 3; ++i) {
-		const double period = 2.0 * static_cast<double>(hp[i]);
-		if (period <= 0.0) continue;
-		double vi = static_cast<double>(out[i]);
-		if (vi < -static_cast<double>(hp[i])) vi += period;
-		else if (vi > static_cast<double>(hp[i])) vi -= period;
-		out[i] = static_cast<DefaultTriMesh::Scalar>(vi);
-	}
-	return out;
-}
+// makePeriod, toEig, toOM are now in VertexGeometry.h/cpp
 
 // Periodic edge length
 double periodEdgeLength(const PeriodicTriMesh& m, EH eh) {

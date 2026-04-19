@@ -1,6 +1,10 @@
 #pragma once
 
-#include "PeriodicMesh.h"
+// Asymptotic conductivity (ADC): FEM solve, sensitivity, shape optimization.
+// Depends on VertexGeometry for 1-ring curvature and Laplacian assembly,
+// and PeriodicRemesh for remeshing during optimization.
+
+#include "VertexGeometry.h"
 #include "PeriodicRemesh.h"
 
 #include <Eigen/Dense>
@@ -11,17 +15,7 @@
 
 namespace xtpms {
 
-// Compiled geometric quantities from vertex 1-ring
-struct Compile1ring {
-	double As = 0;              // Voronoi area
-	Eigen::Vector3d nv{0, 0, 0}; // angle-weighted vertex normal
-	Eigen::Vector3d Lx{0, 0, 0}; // mean curvature vector
-	double H = 0;               // mean curvature (scalar)
-	double K = 0;               // Gaussian curvature
-
-	Compile1ring() = default;
-	Compile1ring(const Eigen::Vector3d& o, const std::vector<Eigen::Vector3d>& ring);
-};
+// ── ADC differential geometry helpers ──────────────────────
 
 // Face local coordinate frame [e1, e2, n] (column vectors), where n = (v1-v0)x(v2-v0)/2
 Eigen::Matrix3d faceFrame(const Eigen::Matrix3d& tri);
@@ -41,7 +35,7 @@ Eigen::Vector3d areaShapeDerivative(
 	const Eigen::Matrix3d& tri, const Eigen::Matrix3d& fr,
 	const Compile1ring v[3]);
 
-// Voigt notation
+// Voigt notation conversions
 Eigen::Vector<double, 6> toVoigt(const Eigen::Matrix3d& M);
 Eigen::Matrix3d fromVoigt6(const Eigen::Vector<double, 6>& v);
 Eigen::Vector3d toVoigt2(const Eigen::Matrix2d& M);
@@ -50,22 +44,6 @@ Eigen::Matrix2d fromVoigt3(const Eigen::Vector3d& v);
 // 2x3 scalar gradient matrix (in local coordinate frame)
 Eigen::Matrix<double, 2, 3> scalarGradientMatrix(
 	const Eigen::Matrix3d& tri, const Eigen::Matrix3d& fr);
-
-// Discrete differential geometry data
-struct VertexGeometry {
-	std::vector<double> cotWeights;             // per-edge cotangent weight
-	std::vector<Eigen::Vector3d> edgeVectors;   // per-edge period-wrapped edge vector
-	Eigen::VectorXd vertexAreas;                // per-vertex dual area
-	std::vector<Eigen::Vector3d> vertexNormals; // per-vertex angle-weighted normal
-	std::vector<Compile1ring> vrings;           // per-vertex compiled 1-ring
-};
-
-VertexGeometry computeVertexGeometry(const PeriodicTriMesh& mesh);
-
-// Assemble cotangent Laplacian
-Eigen::SparseMatrix<double> assembleLaplacian(
-	const PeriodicTriMesh& mesh,
-	const std::vector<double>& cotWeights);
 
 // Assemble RHS
 Eigen::MatrixX3d assembleRHS(

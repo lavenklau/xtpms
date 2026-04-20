@@ -8,46 +8,22 @@ This project implements the algorithm described in:
 
 Given a periodic surface mesh, xtpms computes its **Asymptotic Directional Conductivity (ADC)** tensor and iteratively deforms the surface to maximize effective thermal conductivity. The optimizer drives the surface toward the theoretical upper bound (APAC = 2/3), which is achieved only by triply periodic minimal surfaces.
 
-## Theory
+## Idea
 
-### Asymptotic Directional Conductivity
+The **Asymptotic Directional Conductivity (ADC)** measures the effective thermal conductivity contributed by a periodic surface in the thin-shell limit. Its trace-average (APAC) has a sharp upper bound of **2/3**, achieved if and only if the surface has zero mean curvature everywhere -- i.e., it is a minimal surface.
 
-For a triply periodic surface embedded in a unit cell, the ADC tensor captures the leading-order contribution of the middle surface geometry to effective conductivity in the vanishing-thickness limit:
+This means: **maximizing APAC is equivalent to generating a TPMS**. Starting from any periodic seed mesh, the optimizer drives APAC toward 2/3 and the surface converges to a minimal surface automatically.
 
-$$\mathbf{k}_A = \kappa\left(\mathbf{I} - \frac{1}{|S|}\int_S \mathbf{n}\mathbf{n}^\top\,dA - \mathbf{R}\right)$$
-
-where **n** is the surface normal and **R** encodes the curvature-weighted cell problem solution:
-
-$$[\mathbf{R}]^{ij} = -\frac{1}{|S|}\int_S \bar{u}^i \,\Delta\bar{u}^j\,dA$$
-
-The cell problem on the periodic surface is: solve the surface Laplacian $\Delta\bar{u}^i = -\mathrm{div}(\mathbf{e}_i)$ for each coordinate direction $i = 1, 2, 3$.
-
-### Upper Bound and Optimality
-
-The **Averaged Principal ADC** (APAC) = tr(**k**_A)/3 satisfies:
-
-$$\text{APAC} \leq \frac{2}{3}\kappa$$
-
-Equality holds if and only if the surface has zero mean curvature everywhere, i.e., it is a minimal surface. This provides the first theoretical justification for why TPMS (Gyroid, Schwarz P, Diamond, etc.) are optimal for thermal conductivity.
-
-### Shape Sensitivity
-
-The shape derivative with respect to normal displacement $v_n$ is:
-
-$$\dot{\kappa}_A^{ij}[v_n] = \frac{1}{|S|}\int_S 2v_n\,(\mathbf{b} - H\mathbf{I})(\nabla\bar{u}^i + \mathbf{e}_i)\cdot(\nabla\bar{u}^j + \mathbf{e}_j)\,dA$$
-
-where **b** is the second fundamental form and H is mean curvature. This is computed entirely from surface geometry and cell problem solutions without an adjoint solve.
+The main challenges are topology changes (neck formation requiring surgery), mesh quality degradation during large deformations, and maintaining periodic boundary consistency throughout all operations.
 
 ## Features
 
-- **ADC computation**: cotangent Laplacian FEM on periodic triangular meshes
-- **Shape sensitivity**: adjoint-free Hadamard formula with discrete second fundamental form
-- **Preconditioned gradient descent**: Laplacian smoother + backtracking line search with per-face flip detection
-- **Mean curvature flow regularization**: drives surfaces toward minimal configurations
-- **Curvature-adaptive Delaunay remeshing**: split/collapse/flip/circumcenter smoothing
-- **Singularity surgery**: automatic detection and removal of topological necks via CGAL hole filling + bilaplacian fairing
-- **Non-uniform tri-axis periods**: rectangular unit cells (not limited to cubic)
-- **General objectives**: APAC, individual k_ii components, custom expressions on kA
+- **Compute ADC tensor** for any periodic surface mesh
+- **Generate TPMS** from arbitrary seed meshes by optimizing APAC
+- **Sample periodic surfaces** from built-in types (Gyroid, Schwarz P, Diamond), custom level set expressions, or random Fourier series
+- **Periodize meshes**: merge periodic boundaries to create topologically closed periodic meshes
+- **Custom objectives**: optimize individual conductivity components (k00, k11, k22) or arbitrary expressions
+- **Non-uniform periods**: supports rectangular unit cells, not limited to cubic
 
 ## Building
 
@@ -201,15 +177,6 @@ tests/
     test_aabb_tree.cpp
     data/                       Test meshes (rod3, neck)
 ```
-
-## Validation
-
-Validated against:
-
-- **Analytic ADC** for revolution surfaces with closed-form solutions
-- **Finite-difference sensitivity** compared with Hadamard formula output
-- **Schwarz P / Gyroid / Diamond** achieve APAC = 2/3 (theoretical maximum)
-- **Cross-validation with minsurf** (reference implementation): APAC difference < 0.0001 on classic TPMS
 
 ## License
 

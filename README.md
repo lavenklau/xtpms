@@ -1,46 +1,53 @@
 # xtpms
 
-> **Computational design and optimization of triply periodic minimal surfaces**
+> **Computational design of triply periodic minimal surfaces via asymptotic conductivity optimization**
 
-Triply periodic minimal surfaces (TPMS) — such as the Gyroid, Schwarz P, and Diamond — are nature-inspired geometries found in butterfly wings, sea urchin skeletons, and block copolymer self-assembly. Their unique combination of high surface area, structural efficiency, and tunable porosity makes them ideal building blocks for:
+This project implements the algorithm described in:
 
-- **Lightweight metamaterials** and lattice structures for aerospace and automotive
-- **Tissue engineering scaffolds** with controlled pore architecture
-- **Heat exchangers** and thermal management devices
-- **Battery electrodes** and catalytic substrates
-- **Acoustic and photonic crystals**
+> Di Zhang, Ligang Liu. *Asymptotic analysis and design of shell-based thermal lattice metamaterials.* [arXiv:2506.22319](https://arxiv.org/abs/2506.22319), 2025.
 
-While TPMS geometries are widely used, **designing optimal TPMS for specific physical properties remains challenging**. xtpms addresses this gap: given a periodic surface, it automatically optimizes the shape to maximize effective thermal/electrical conductivity — a key performance metric for heat exchangers, electrodes, and conductive scaffolds.
+Given a periodic surface mesh, xtpms computes its **Asymptotic Directional Conductivity (ADC)** tensor and iteratively deforms the surface to maximize effective thermal conductivity. The optimizer drives the surface toward the theoretical upper bound (APAC = 2/3), which is achieved only by triply periodic minimal surfaces.
 
-<!-- TODO: add a figure showing optimization from rod-3 to near-optimal surface -->
+## Theory
 
-## What xtpms Does
+### Asymptotic Directional Conductivity
 
-xtpms computes the **effective (homogenized) conductivity tensor** of a periodic surface using asymptotic analysis, then **iteratively deforms the surface** to optimize it. The optimizer drives the surface toward the theoretical upper bound (APAC = 2/3) — a limit achieved only by true minimal surfaces.
+For a triply periodic surface embedded in a unit cell, the ADC tensor captures the leading-order contribution of the middle surface geometry to effective conductivity in the vanishing-thickness limit:
 
-**Example: rod-3 scaffold optimization**
+$$\mathbf{k}_A = \kappa\left(\mathbf{I} - \frac{1}{|S|}\int_S \mathbf{n}\mathbf{n}^\top\,dA - \mathbf{R}\right)$$
 
-```
-iter= 0   APAC = 0.421   (initial rod-3 geometry)
-iter=10   APAC = 0.508
-iter=20   APAC = 0.550
-iter=30   APAC = 0.594
-iter=40   APAC = 0.634   ← singularity surgery
-iter=50   APAC = 0.666   ← converged to theoretical upper bound 2/3
-```
+where **n** is the surface normal and **R** encodes the curvature-weighted cell problem solution:
 
-The framework is not limited to conductivity — it supports **general objective functions** on the conductivity tensor (e.g., single component k₁₁, isotropy, anisotropy ratio), and can be extended to other homogenized properties.
+$$[\mathbf{R}]^{ij} = -\frac{1}{|S|}\int_S \bar{u}^i \,\Delta\bar{u}^j\,dA$$
+
+The cell problem on the periodic surface is: solve the surface Laplacian $\Delta\bar{u}^i = -\mathrm{div}(\mathbf{e}_i)$ for each coordinate direction $i = 1, 2, 3$.
+
+### Upper Bound and Optimality
+
+The **Averaged Principal ADC** (APAC) = tr(**k**_A)/3 satisfies:
+
+$$\text{APAC} \leq \frac{2}{3}\kappa$$
+
+Equality holds if and only if the surface has zero mean curvature everywhere, i.e., it is a minimal surface. This provides the first theoretical justification for why TPMS (Gyroid, Schwarz P, Diamond, etc.) are optimal for thermal conductivity.
+
+### Shape Sensitivity
+
+The shape derivative with respect to normal displacement $v_n$ is:
+
+$$\dot{\kappa}_A^{ij}[v_n] = \frac{1}{|S|}\int_S 2v_n\,(\mathbf{b} - H\mathbf{I})(\nabla\bar{u}^i + \mathbf{e}_i)\cdot(\nabla\bar{u}^j + \mathbf{e}_j)\,dA$$
+
+where **b** is the second fundamental form and H is mean curvature. This is computed entirely from surface geometry and cell problem solutions without an adjoint solve.
 
 ## Features
 
-- **Asymptotic homogenization** on discrete periodic surfaces via cotangent Laplacian FEM
-- **Shape sensitivity** from adjoint-based Hadamard formula with discrete second fundamental form
-- **Preconditioned gradient descent** with Laplacian smoothing and backtracking line search
-- **Mean curvature flow** regularization to drive surfaces toward minimal surface configurations
-- **Curvature-adaptive Delaunay remeshing** to maintain mesh quality during optimization
-- **Singularity surgery** for automatic detection and removal of topological necks (high-curvature regions detected → CGAL hole filling → bilaplacian fairing)
-- **Non-uniform tri-axis periods** — the unit cell can be rectangular, not just cubic
-- **Periodic mesh utilities** — boundary merging, unit cell splitting, `saveUnitCell` visualization
+- **ADC computation**: cotangent Laplacian FEM on periodic triangular meshes
+- **Shape sensitivity**: adjoint-free Hadamard formula with discrete second fundamental form
+- **Preconditioned gradient descent**: Laplacian smoother + backtracking line search with per-face flip detection
+- **Mean curvature flow regularization**: drives surfaces toward minimal configurations
+- **Curvature-adaptive Delaunay remeshing**: split/collapse/flip/circumcenter smoothing
+- **Singularity surgery**: automatic detection and removal of topological necks via CGAL hole filling + bilaplacian fairing
+- **Non-uniform tri-axis periods**: rectangular unit cells (not limited to cubic)
+- **General objectives**: APAC, individual k_ii components, custom expressions on kA
 
 ## Building
 
@@ -49,74 +56,69 @@ The framework is not limited to conductivity — it supports **general objective
 - CMake 3.16+
 - C++17 compiler (MSVC 2019+, GCC 9+, Clang 10+)
 
-Install dependencies via **conda** (recommended) or **vcpkg**:
+Dependencies (via **vcpkg** or **conda**):
+- OpenMesh, CGAL, Eigen3, libigl, CLI11, GoogleTest
 
-**Option A: conda**
+### Build
+
 ```bash
-conda env create -f environment.yml
+# With vcpkg:
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake
+cmake --build build --config Release
+
+# With conda:
 conda activate xtpms
-```
-
-**Option B: vcpkg**
-```bash
-vcpkg install cgal openmesh eigen3 gtest libigl
-```
-
-### Configure and build
-
-```bash
-# With conda (auto-detected):
 cmake -B build
 cmake --build build --config Release
-
-# With vcpkg (specify toolchain):
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake
-cmake --build build --config Release
 ```
 
-## Command-Line Tool
+## Usage
 
-The `xtpms` CLI provides five subcommands:
+The `xtpms` CLI provides four subcommands: `sample`, `generate`, `optimize`, `compute`, `periodize`.
 
-### Sample isosurface from level set
-
-Extract a periodic surface from a level set expression. Expressions use **2π-periodic** convention — they are automatically scaled to match the physical period.
+### Sample a periodic surface
 
 ```bash
-# Built-in types
-xtpms sample -e gyroid -o gyroid.obj --half-period 0.5,0.5,0.5 -r 20
-xtpms sample -e schwarzp -o schwarzp.obj -r 24
-xtpms sample -e diamond -o diamond.obj --half-period 1,0.7,0.4
+# Built-in TPMS
+xtpms sample -e gyroid -o gyroid.obj --half-period 1,1,1 -r 24
+xtpms sample -e diamond -o diamond.obj --half-period 0.5,0.7,1.0
 
-# Custom expression (2π-periodic in x, y, z)
+# Custom level set (2pi-periodic in x,y,z, auto-scaled to period)
 xtpms sample -e "cos(x)+cos(y)+cos(z)" -o schwarzp.obj
-xtpms sample -e "sin(x)*cos(y)+sin(y)*cos(z)+sin(z)*cos(x)" -o gyroid.obj
-xtpms sample -e "cos(x)+cos(y)+cos(z)+0.3*sin(2*x)*sin(y)" -o perturbed.obj
 
-# Random triperiodic surface
-xtpms sample --random -o random_surface.obj -r 16
+# Random triperiodic Fourier surface
+xtpms sample --random --kmax 2 --decay 2.0 -o random.obj
 ```
 
-### Generate TPMS from seed mesh
-
-Take any periodic mesh as a seed and optimize it toward a TPMS. The period is automatically detected from the bounding box, and boundary vertices are clamped to the bbox faces.
+### Generate TPMS from seed (optimize with default settings)
 
 ```bash
-# Optimize seed mesh toward TPMS (auto-detect period)
-xtpms generate -i scaffold.obj -o tpms.obj --max-iter 100
-
-# With split output for visualization
-xtpms generate -i seed.obj -o tpms_unit_cell.obj --split
+xtpms generate -i seed.obj -o tpms.obj --half-period 1,1,1 --max-iter 100
 ```
 
-### Periodize an existing mesh
+`generate` is an alias for `optimize --objective apac` with surgery enabled by default.
+
+### Optimize with full control
 
 ```bash
-# Merge periodic boundary of an OBJ mesh
-xtpms periodize -i raw_mesh.obj -o periodic.obj --half-period 1,1,1
+# Maximize APAC (default)
+xtpms optimize -i mesh.obj -o result.obj --half-period 1,1,1 --max-iter 100
 
-# Split unit cell (duplicate boundary vertices) for visualization
-xtpms periodize -i raw_mesh.obj -o unit_cell.obj --half-period 1,1,1 --split
+# Maximize k11 (x-direction conductivity)
+xtpms optimize -i mesh.obj -o result.obj --objective k11
+
+# Custom expression objective
+xtpms optimize -i mesh.obj -o result.obj --objective "(k00-k11)^2+(k11-k22)^2"
+
+# Tune optimization parameters
+xtpms optimize -i mesh.obj -o result.obj \
+    --max-step 1.0 \
+    --mcf-weight 0.1 \
+    --adaptive-eps 1.0 \
+    --surgery-tol 25 \
+    --surgery-interval 4 \
+    --nf-limit 100000 \
+    --output-dir ./iterations
 ```
 
 ### Compute effective conductivity
@@ -129,138 +131,85 @@ xtpms compute -i periodic_mesh.obj --half-period 1,1,1
 #       0.0006  0.6663 -0.0005
 #       0.0008 -0.0005  0.6665
 #   APAC = 0.6664
-#   eigenvalues: 0.6651 0.6669 0.6673
 ```
 
-### Optimize conductivity
+### Periodize a mesh
 
 ```bash
-# Maximize APAC (default objective)
-xtpms optimize -i mesh.obj -o optimized.obj --half-period 1,1,1 \
-    --objective apac --max-iter 100
-
-# Maximize k11 with surgery enabled
-xtpms optimize -i mesh.obj -o opt_k11.obj --half-period 1,1,1 \
-    --objective k11 --surgery --surgery-start 40
-
-# Custom objective expression (kA components: k00..k22)
-xtpms optimize -i mesh.obj -o isotropic.obj --half-period 1,1,1 \
-    --objective "(k00-k11)^2+(k11-k22)^2+(k00-k22)^2"
-
-# Save intermediate meshes for animation
-xtpms optimize -i mesh.obj -o final.obj --half-period 1,1,1 \
-    --output-dir ./iterations --max-iter 50
+xtpms periodize -i raw_mesh.obj -o periodic.obj --half-period 1,1,1
 ```
 
 ## C++ API
 
-### Optimize a TPMS surface
-
 ```cpp
 #include "PeriodicMesh.h"
+#include "VertexGeometry.h"
 #include "AsymptoticConductivity.h"
 
-// 1. Load mesh and set up periodic boundary
+// Load and set up periodic mesh
 xtpms::PeriodicTriMesh mesh;
-mesh.setHalfPeriod({1.0, 1.0, 1.0});  // period = [0, 2]^3
-// ... load vertices and faces, then:
+mesh.setHalfPeriod({1.0, 1.0, 1.0});
+// ... add vertices and faces ...
 mesh.mergePeriodBoundary();
 
-// 2. Run optimization
-xtpms::TailorADCOptions opts;
-opts.objectiveType = "apac";    // maximize trace(kA)/3
-opts.maxIter = 100;
-opts.maxStep = 1.0;
-opts.mcfWeight = 0.1;           // mean curvature flow regularization
-opts.enableRemesh = true;       // adaptive Delaunay remeshing
-opts.enableSurgery = true;      // automatic neck removal
-opts.surgeryStartIter = 40;     // delay surgery to let optimization settle
-
-xtpms::tailorADC(mesh, opts);
-
-// 3. Export
-mesh.saveUnitCell("optimized.obj");
-```
-
-### Just compute effective conductivity
-
-```cpp
+// Compute ADC
 auto geom = xtpms::computeVertexGeometry(mesh);
 Eigen::MatrixX3d u;
 Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
+double apac = kA.trace() / 3.0;  // theoretical max: 2/3
 
-double apac = kA.trace() / 3.0;
-std::cout << "APAC = " << apac << std::endl;  // theoretical max: 2/3
-std::cout << "kA =\n" << kA << std::endl;
+// Optimize
+xtpms::TailorADCOptions opts;
+opts.objectiveType = "apac";
+opts.maxIter = 100;
+opts.enableRemesh = true;
+opts.enableSurgery = true;
+xtpms::tailorADC(mesh, opts);
+
+// Export
+mesh.saveUnitCell("optimized.obj");
 ```
 
-### Custom objective functions
-
-```cpp
-// Maximize k11 (conductivity along x-axis)
-opts.objectiveType = "k00";
-
-// Or define via the evaluateADCObjective interface:
-// "apac"  → trace(kA)/3
-// "k00"   → kA(0,0)
-// "k11"   → kA(1,1)
-// "k22"   → kA(2,2)
-// "iso"   → isotropy (minimize eigenvalue spread)
-```
-
-## How It Works
-
-### Homogenized conductivity
-
-For a periodic surface $S$ embedded in a unit cell, the effective conductivity tensor is:
-
-$$\mathbf{k}_A = \frac{1}{|S|} \int_S \nabla\chi \cdot \nabla\chi^T \, dA$$
-
-where $\chi = u + y$ is the corrector field, and $u$ solves the cell problem $\Delta_S u = -\mathrm{div}_S(\mathbf{e})$.
-
-The averaged principal conductivity (APAC) = $\mathrm{tr}(\mathbf{k}_A)/3$ has a theoretical upper bound of $2/3$, achieved by triply periodic minimal surfaces (surfaces with zero mean curvature everywhere).
-
-### Shape sensitivity
-
-The shape derivative with respect to normal displacement $\delta n$ follows the Hadamard formula:
-
-$$\delta k_{A,ij} = \frac{1}{|S|} \int_S \left[ 2H |\nabla\chi|^2 - 2\,\mathrm{II}(\nabla\chi, \nabla\chi) \right] \delta n \, dA$$
-
-where $H$ is the mean curvature and $\mathrm{II}$ is the second fundamental form. This is computed entirely from the surface geometry and the cell problem solution — no adjoint solve is needed.
-
-### Optimization pipeline
+## Optimization Pipeline
 
 Each iteration:
 
-1. **Solve** the cell problem on the current mesh (cotangent Laplacian)
-2. **Compute** shape sensitivity via the Hadamard formula
-3. **Precondition** the gradient with a Laplacian smoother
-4. **Add** mean curvature flow for regularization
-5. **Line search** with face-flip checking
-6. **Remesh** adaptively based on local curvature
-7. **(Optional) Surgery** to remove topological necks
+1. **Surgery** (every N iterations): detect high-curvature singularities, excise faces, CGAL hole filling, bilaplacian fairing
+2. **Remesh**: curvature-adaptive Delaunay remeshing (split/collapse/flip/circumcenter smooth)
+3. **Solve**: cotangent Laplacian cell problem for 3 coordinate directions
+4. **Sensitivity**: per-vertex shape derivative via second fundamental form
+5. **Precondition**: Laplacian-smoothed gradient: $G = -cL + A_v$, solve $G\,dn = -A_v f_{weight}\,\partial f/\partial v_n$
+6. **Line search**: backtracking with per-face cos(60) flip detection
+7. **MCF regularization**: mean curvature flow weighted displacement
 
 ## Project Structure
 
 ```
-xtpms/src/
-    PeriodicMesh.h/cpp           Periodic mesh operations
-    PeriodicRemesh.h/cpp         Curvature-adaptive Delaunay remeshing
-    AsymptoticConductivity.h/cpp ADC computation, sensitivity, optimizer
-    MarchingCubes.h/cpp          Isosurface extraction
+xtpms/
+    main.cpp                    CLI application
+    src/
+        MeshTypes.h             OpenMesh type definitions
+        PeriodicMesh.h/cpp      Periodic mesh: boundary merge, surgery, split/save
+        VertexGeometry.h/cpp    1-ring curvature, cotangent Laplacian, coordinate utilities
+        PeriodicRemesh.h/cpp    Curvature-adaptive Delaunay remeshing
+        AsymptoticConductivity.h/cpp  ADC solve, sensitivity, shape optimization
+        MarchingCubes.h/cpp     Isosurface extraction with periodic boundary handling
+        AABBTree.h              CGAL-based nearest-point queries
 tests/
     test_periodic_mesh_periodize.cpp
-    data/                        Test meshes
+    test_marching_cubes.cpp
+    test_aabb_tree.cpp
+    data/                       Test meshes (rod3, neck)
 ```
 
 ## Validation
 
-The implementation is validated against:
+Validated against:
 
-- **Analytic k₁₁** for revolution surfaces with known closed-form conductivity
-- **Variational sensitivity** compared with finite-difference on revolution surfaces
-- **Schwarz P / Gyroid** known optimal APAC = 2/3
-- **Mesh convergence** on multiple TPMS types at increasing resolution
+- **Analytic ADC** for revolution surfaces with closed-form solutions
+- **Finite-difference sensitivity** compared with Hadamard formula output
+- **Schwarz P / Gyroid / Diamond** achieve APAC = 2/3 (theoretical maximum)
+- **Cross-validation with minsurf** (reference implementation): APAC difference < 0.0001 on classic TPMS
 
 ## License
 
@@ -268,13 +217,11 @@ The implementation is validated against:
 
 ## Citation
 
-If you find this useful, please consider citing:
-
 ```bibtex
-@software{xtpms2025,
-  title  = {xtpms: Computational design of triply periodic minimal surfaces},
-  author = {Zhang, Di},
-  year   = {2025},
-  url    = {https://github.com/lavenklau/xtpms}
+@article{zhang2025asymptotic,
+  title   = {Asymptotic analysis and design of shell-based thermal lattice metamaterials},
+  author  = {Zhang, Di and Liu, Ligang},
+  journal = {arXiv preprint arXiv:2506.22319},
+  year    = {2025}
 }
 ```

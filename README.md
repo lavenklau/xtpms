@@ -8,6 +8,24 @@ This project implements the algorithm described in:
 
 Given a periodic surface mesh, xtpms computes its **Asymptotic Directional Conductivity (ADC)** tensor and iteratively deforms the surface to maximize effective thermal conductivity. The optimizer drives the surface toward the theoretical upper bound (APAC = 2/3), which is achieved only by triply periodic minimal surfaces.
 
+<p align="center">
+<img src="renders/diamond.png" width="250" alt="Diamond">
+<img src="renders/gyroid.png" width="250" alt="Gyroid">
+<img src="renders/schwarzp.png" width="250" alt="Schwarz P">
+</p>
+<p align="center">
+<em>Classic TPMS: Diamond, Gyroid, Schwarz P (APAC = 2/3)</em>
+</p>
+
+<p align="center">
+<img src="renders/random1.png" width="250" alt="Random TPMS 1">
+<img src="renders/random2.png" width="250" alt="Random TPMS 2">
+<img src="renders/random3.png" width="250" alt="Random TPMS 3">
+</p>
+<p align="center">
+<em>Novel TPMS generated from random seed surfaces</em>
+</p>
+
 ## Idea
 
 The **Asymptotic Directional Conductivity (ADC)** measures the effective thermal conductivity contributed by a periodic surface in the thin-shell limit. Its trace-average (APAC) has a sharp upper bound of **2/3**, achieved if and only if the surface has zero mean curvature everywhere -- i.e., it is a minimal surface.

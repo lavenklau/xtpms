@@ -32,8 +32,6 @@ The **Asymptotic Directional Conductivity (ADC)** measures the effective thermal
 
 This means: **maximizing APAC is equivalent to generating a TPMS**. Starting from any periodic seed mesh, the optimizer drives APAC toward 2/3 and the surface converges to a minimal surface automatically.
 
-The main challenges are topology changes (neck formation requiring surgery), mesh quality degradation during large deformations, and maintaining periodic boundary consistency throughout all operations.
-
 ## Features
 
 - **Compute ADC tensor** for any periodic surface mesh

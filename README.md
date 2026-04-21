@@ -1,7 +1,5 @@
 # xtpms
 
-> **Computational design of triply periodic minimal surfaces via asymptotic conductivity optimization**
-
 This project implements the algorithm described in:
 
 > Di Zhang, Ligang Liu. *Asymptotic analysis and design of shell-based thermal lattice metamaterials.* [arXiv:2506.22319](https://arxiv.org/abs/2506.22319), 2025.

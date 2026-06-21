@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <unordered_map>

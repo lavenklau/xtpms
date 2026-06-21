@@ -10,6 +10,7 @@
 #include "MarchingCubes.h"
 #include "PeriodicRemesh.h"
 #include "AsymptoticConductivity.h"
+#include "ConjugateSurface.h"
 
 #include <CGAL/Simple_cartesian.h>
 #include <CGAL/Surface_mesh.h>
@@ -776,6 +777,14 @@ int main(int argc, char** argv) {
 	cmdS->add_option("--decay", s_decay, "Coefficient decay exponent for --random")->default_val(2.0);
 	cmdS->add_flag("--no-split", s_nosplit);
 
+	// ── conj ──
+	auto* cmdJ = app.add_subcommand("conj", "Compute conjugate surface from minimal surface fundamental domain");
+	std::string cj_in, cj_out;
+	double cj_theta = 90.0;
+	cmdJ->add_option("-i,--input", cj_in, "Input OBJ (fundamental domain)")->required();
+	cmdJ->add_option("-o,--output", cj_out, "Output OBJ")->default_val("");
+	cmdJ->add_option("--theta", cj_theta, "Bonnet rotation angle (degrees, default 90=pure conjugate)")->default_val(90.0);
+
 	CLI11_PARSE(app, argc, argv);
 
 	if (cmdP->parsed()) return cmdPeriodize(pz_in, pz_out, hpStr, pz_nosplit);
@@ -789,5 +798,15 @@ int main(int argc, char** argv) {
 						   o_nosplit, o_dir);
 	}
 	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random, s_kmax, s_decay);
+	if (cmdJ->parsed()) {
+		xtpms::DefaultTriMesh mesh;
+		if (!OpenMesh::IO::read_mesh(mesh, cj_in)) {
+			std::cerr << "Error: cannot read " << cj_in << "\n";
+			return 1;
+		}
+		std::string out = cj_out.empty() ?
+			cj_in.substr(0, cj_in.find_last_of('.')) + ".conj.obj" : cj_out;
+		return xtpms::computeConjugateSurface(mesh, out, cj_theta) ? 0 : 1;
+	}
 	return 0;
 }

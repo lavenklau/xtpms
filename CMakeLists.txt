@@ -86,8 +86,9 @@ add_library(xtpms_core STATIC
     xtpms/src/VertexGeometry.cpp
     xtpms/src/PeriodicRemesh.cpp
     xtpms/src/AsymptoticConductivity.cpp
+    xtpms/src/ConjugateSurface.cpp
 )
-target_link_libraries(xtpms_core PUBLIC xtpms_headers Eigen3::Eigen PRIVATE CGAL::CGAL igl::core)
+target_link_libraries(xtpms_core PUBLIC xtpms_headers Eigen3::Eigen CGAL::CGAL PRIVATE igl::core)
 if(MSVC)
     target_compile_options(xtpms_core PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/bigobj>)
 else()

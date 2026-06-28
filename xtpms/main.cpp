@@ -722,7 +722,7 @@ int main(int argc, char** argv) {
 	// ── periodize ──
 	auto* cmdP = app.add_subcommand("periodize", "Merge periodic boundary of a mesh");
 	std::string pz_in, pz_out; bool pz_nosplit = false;
-	cmdP->add_option("-i,--input", pz_in, "Input OBJ")->required();
+	cmdP->add_option("-i,--input", pz_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 	cmdP->add_option("-o,--output", pz_out, "Output OBJ")->required();
 	cmdP->add_option("--half-period", hpStr, "Half-period x,y,z");
 	cmdP->add_flag("--no-split", pz_nosplit, "Skip split (use raw saveUnitCell instead)");
@@ -730,7 +730,7 @@ int main(int argc, char** argv) {
 	// ── compute ──
 	auto* cmdC = app.add_subcommand("compute", "Compute effective conductivity tensor");
 	std::string cp_in;
-	cmdC->add_option("-i,--input", cp_in, "Input OBJ")->required();
+	cmdC->add_option("-i,--input", cp_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 	cmdC->add_option("--half-period", hpStr, "Half-period x,y,z");
 
 	// ── optimize (also aliased as "generate") ──
@@ -744,7 +744,7 @@ int main(int argc, char** argv) {
 	cmdO->add_option("--objective", o_obj,
 		"apac|k00|k11|k22|iso or expression")->default_val("apac");
 	for (auto* cmd : {cmdO, cmdG}) {
-		cmd->add_option("-i,--input", o_in, "Input OBJ")->required();
+		cmd->add_option("-i,--input", o_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 		cmd->add_option("-o,--output", o_out, "Output OBJ")->required();
 		cmd->add_option("--half-period", hpStr);
 		cmd->add_option("--max-iter", o_iter)->default_val(100);
@@ -781,7 +781,7 @@ int main(int argc, char** argv) {
 	auto* cmdJ = app.add_subcommand("conj", "Compute conjugate surface from minimal surface fundamental domain");
 	std::string cj_in, cj_out;
 	double cj_theta = 90.0;
-	cmdJ->add_option("-i,--input", cj_in, "Input OBJ (fundamental domain)")->required();
+	cmdJ->add_option("-i,--input", cj_in, "Input mesh (OBJ, STL, PLY, OFF; fundamental domain)")->required();
 	cmdJ->add_option("-o,--output", cj_out, "Output OBJ")->default_val("");
 	cmdJ->add_option("--theta", cj_theta, "Bonnet rotation angle (degrees, default 90=pure conjugate)")->default_val(90.0);
 

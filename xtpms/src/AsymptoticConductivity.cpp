@@ -390,12 +390,13 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			if (std::isnan(p[0]) || std::isnan(p[1]) || std::isnan(p[2]))
 				return std::string(stage) + ": NaN vertex detected (v" + std::to_string((*v_it).idx()) + ")";
 		}
-		// Check for excessive boundary edges (holes) — allow a few from remesh artifacts
+		// Check for boundary edges — a closed periodic mesh must have zero boundary edges.
+		// Any boundary edge means the mesh has developed holes; optimization must terminate.
 		int nBnd = 0;
 		for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it)
 			if (mesh.is_boundary(*e_it)) ++nBnd;
-		if (nBnd > nf / 10)
-			return std::string(stage) + ": too many boundary edges (" + std::to_string(nBnd) + "/" + std::to_string(nf) + " faces)";
+		if (nBnd > 0)
+			return std::string(stage) + ": boundary edges detected (" + std::to_string(nBnd) + " edges / " + std::to_string(nf) + " faces), mesh is no longer closed";
 		return "";
 	};
 

@@ -326,9 +326,10 @@ int cmdCompute(const std::string& input, const std::string& hpStr) {
 	int nf = static_cast<int>(mesh.n_faces());
 	std::cout << "nv=" << nv << " nf=" << nf
 			  << " As=" << geom.vertexAreas.sum() << "\n";
-	// Euler characteristic: χ = V - E + F; E = 3F/2 for pure triangle mesh → χ = V - F/2
-	int chi = nv - nf / 2;
-	double genus = (2.0 - chi) / 2.0;
+	// Euler characteristic: χ = V - E + F
+	int ne = static_cast<int>(mesh.n_edges());
+	int chi = nv - ne + nf;
+	double genus = chi != 0 ? (2.0 - chi) / 2.0 : 0.0;
 	std::cout << "Euler χ=" << chi << " genus=" << genus << "\n";
 	std::cout << "kA =\n" << kA << "\n";
 	std::cout << "APAC = " << kA.trace() / 3.0 << "\n";

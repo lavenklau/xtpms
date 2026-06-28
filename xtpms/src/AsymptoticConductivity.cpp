@@ -436,8 +436,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 					std::cout << "surgery: removed " << removed << " residual component(s)\n";
 				std::cout << "surgery performed at iter " << iter
 						  << " nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
-						  << " χ=" << (static_cast<int>(mesh.n_vertices()) - static_cast<int>(mesh.n_faces())/2)
-						  << " g=" << ((2.0 - (static_cast<int>(mesh.n_vertices()) - static_cast<int>(mesh.n_faces())/2))/2.0)
+						  << " χ=" << (static_cast<int>(mesh.n_vertices()) - static_cast<int>(mesh.n_edges()) + static_cast<int>(mesh.n_faces()))
+						  << " g=" << ((2.0 - (static_cast<int>(mesh.n_vertices()) - static_cast<int>(mesh.n_edges()) + static_cast<int>(mesh.n_faces()))) / 2.0)
 						  << "\n";
 				if (!opts.outputDir.empty()) {
 					mesh.saveUnitCell(opts.outputDir + "/aftsur_" + std::to_string(iter) + ".obj");
@@ -653,8 +653,9 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		for (int i = 0; i < nv; ++i)
 			maxDisp = std::max(maxDisp, step * stepVec[static_cast<std::size_t>(i)].norm());
 		int nf = static_cast<int>(mesh.n_faces());
-		int chi = nv - nf / 2;
-		double genus = (2.0 - chi) / 2.0;
+		int ne = static_cast<int>(mesh.n_edges());
+		int chi = nv - ne + nf;
+		double genus = chi != 0 ? (2.0 - chi) / 2.0 : 0.0;
 		std::cout << "iter=" << iter << " obj=" << obj.value
 				  << " step=" << step << " kA_trace=" << kA.trace()
 				  << " nv=" << nv << " nf=" << nf

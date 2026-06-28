@@ -322,8 +322,14 @@ int cmdCompute(const std::string& input, const std::string& hpStr) {
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
-	std::cout << "nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
+	int nv = static_cast<int>(mesh.n_vertices());
+	int nf = static_cast<int>(mesh.n_faces());
+	std::cout << "nv=" << nv << " nf=" << nf
 			  << " As=" << geom.vertexAreas.sum() << "\n";
+	// Euler characteristic: χ = V - E + F; E = 3F/2 for pure triangle mesh → χ = V - F/2
+	int chi = nv - nf / 2;
+	double genus = (2.0 - chi) / 2.0;
+	std::cout << "Euler χ=" << chi << " genus=" << genus << "\n";
 	std::cout << "kA =\n" << kA << "\n";
 	std::cout << "APAC = " << kA.trace() / 3.0 << "\n";
 	Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(kA);

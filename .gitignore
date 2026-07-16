@@ -19,8 +19,11 @@ mono_crash.*
 # CMake / Ninja out-of-source
 [Bb]uild/
 
-# Local mesh outputs (e.g. test_marching_cubes gyroid OBJ)
+# Local mesh / optimization / diagnostic run outputs (never commit)
+artifacts/
 results/
+batch_local/
+animation/
 
 # Build results
 [Dd]ebug/
@@ -387,7 +390,7 @@ CMakePresets.json
 configure.cmd
 configure.ps1
 
-# Batch results and diagnostic outputs
+# Legacy batch / diagnostic outputs (also covered if moved under artifacts/)
 batch_result*/
 hung_cases/
 minsurf_comparison/

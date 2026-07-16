@@ -161,7 +161,7 @@ TEST(MarchingCubes, periodicGyroidGridWritesTriMeshFile) {
 #elif defined(XTPMS_MC_RESULTS_DIR)
 	outPath = fs::path(XTPMS_MC_RESULTS_DIR) / "xtpms_marching_cubes_gyroid.obj";
 #else
-	outPath = fs::current_path() / "results" / "xtpms_marching_cubes_gyroid.obj";
+	outPath = fs::current_path() / "artifacts" / "xtpms_marching_cubes_gyroid.obj";
 #endif
 	{
 		std::error_code ec;

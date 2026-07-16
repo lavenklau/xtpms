@@ -2213,7 +2213,7 @@ TEST(Surgery, ExportMergedSplitSingularity) {
 	auto mesh = loadPeriodicMeshLikeCli(src, hp);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
 
-	const fs::path outDir = fs::path("build/results/befsur0004_surgery");
+	const fs::path outDir = fs::path("artifacts/surgery/befsur0004");
 	fs::create_directories(outDir);
 
 	const std::string splitObj = (outDir / "merged_split.obj").string();
@@ -2386,7 +2386,7 @@ TEST(Surgery, DiagnoseSingularityAtBoundary) {
 
 	// split export: where is max singularity in OBJ vertex order?
 	xtpms::DefaultTriMesh splitMesh;
-	const fs::path outDir = fs::path("build/results/befsur0004_surgery");
+	const fs::path outDir = fs::path("artifacts/surgery/befsur0004");
 	const std::string splitObj = (outDir / "merged_split.obj").string();
 	const std::string splitSing = (outDir / "merged_split_singularity.txt").string();
 	ASSERT_TRUE(mesh.saveSplitUnitCellWithSingularity(splitObj, splitSing, 2));
@@ -2469,7 +2469,7 @@ TEST(Surgery, ExternalMeshFromEnv) {
 	std::cout << "before surgery (IDT singularity): maxSing=" << maxSing << " avgSing=" << avgSing
 			  << "\n";
 
-	const fs::path outDir = fs::path("build/results/befsur0004_surgery");
+	const fs::path outDir = fs::path("artifacts/surgery/befsur0004");
 	fs::create_directories(outDir);
 	const std::string beforePath = (outDir / "before_surgery.obj").string();
 	const std::string holesPath = (outDir / "after_excision_holes.obj").string();

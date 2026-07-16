@@ -3,6 +3,7 @@
 #include "AABBTree.h"
 #include "AsymptoticConductivity.h"
 #include "MarchingCubes.h"
+#include "VertexGeometry.h"
 
 #include <Eigen/Dense>
 #include <OpenMesh/Core/IO/MeshIO.hh>
@@ -10,14 +11,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <queue>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <CGAL/AABB_segment_primitive.h>
@@ -76,15 +81,19 @@ void assignTriMesh(const DefaultTriMesh& in, PeriodicTriMesh& out) {
 		const int b = (*fv_it).idx();
 		++fv_it;
 		const int c = (*fv_it).idx();
-		out.add_face(vh[static_cast<size_t>(a)], vh[static_cast<size_t>(b)], vh[static_cast<size_t>(c)]);
+		out.add_face(
+			vh[static_cast<size_t>(a)], vh[static_cast<size_t>(b)], vh[static_cast<size_t>(c)]);
 	}
 }
 
-void meshToRaw(const DefaultTriMesh& mesh, std::vector<std::array<double, 3>>& verts, std::vector<TriMeshFace>& faces) {
+void meshToRaw(const DefaultTriMesh& mesh,
+			   std::vector<std::array<double, 3>>& verts,
+			   std::vector<TriMeshFace>& faces) {
 	verts.resize(mesh.n_vertices());
 	for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 		const Vec3d& p = mesh.point(*v_it);
-		verts[static_cast<size_t>((*v_it).idx())] = {static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2])};
+		verts[static_cast<size_t>((*v_it).idx())] = {
+			static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2])};
 	}
 	faces.reserve(mesh.n_faces());
 	for (auto f_it = mesh.faces_begin(); f_it != mesh.faces_end(); ++f_it) {
@@ -104,14 +113,13 @@ void translateMeshInPlace(PeriodicTriMesh& mesh, const Vec3d& delta) {
 	}
 }
 
-void buildExtendedMesh27(
-	const std::vector<std::array<double, 3>>& baseVerts,
-	const std::vector<TriMeshFace>& baseFaces,
-	double Lx,
-	double Ly,
-	double Lz,
-	std::vector<std::array<double, 3>>& outVerts,
-	std::vector<TriMeshFace>& outFaces) {
+void buildExtendedMesh27(const std::vector<std::array<double, 3>>& baseVerts,
+						 const std::vector<TriMeshFace>& baseFaces,
+						 double Lx,
+						 double Ly,
+						 double Lz,
+						 std::vector<std::array<double, 3>>& outVerts,
+						 std::vector<TriMeshFace>& outFaces) {
 	outVerts.clear();
 	outFaces.clear();
 	if (baseVerts.empty() || baseFaces.empty()) {
@@ -145,16 +153,15 @@ inline int nodeIndex(int i, int j, int k, int np) {
 	return i + np * (j + np * k);
 }
 
-void markCellsOverlappingFundDomain(
-	const std::vector<std::array<double, 3>>& extVerts,
-	const std::vector<TriMeshFace>& extFaces,
-	double Lx,
-	double Ly,
-	double Lz,
-	int nx,
-	int ny,
-	int nz,
-	std::vector<uint8_t>& active) {
+void markCellsOverlappingFundDomain(const std::vector<std::array<double, 3>>& extVerts,
+									const std::vector<TriMeshFace>& extFaces,
+									double Lx,
+									double Ly,
+									double Lz,
+									int nx,
+									int ny,
+									int nz,
+									std::vector<uint8_t>& active) {
 	const double dx = Lx / static_cast<double>(nx);
 	const double dy = Ly / static_cast<double>(ny);
 	const double dz = Lz / static_cast<double>(nz);
@@ -214,7 +221,8 @@ void dilateActiveCells(std::vector<uint8_t>& active, int nx, int ny, int nz, int
 								const int ni = i + di;
 								const int nj = j + dj;
 								const int nk = k + dk;
-								if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 || nk >= nz) {
+								if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 ||
+									nk >= nz) {
 									continue;
 								}
 								tmp[static_cast<size_t>(cellIndex(ni, nj, nk, nx, ny))] = 1;
@@ -234,7 +242,9 @@ struct Dsu {
 		std::iota(parent.begin(), parent.end(), 0);
 	}
 	int find(int x) {
-		return parent[static_cast<size_t>(x)] == x ? x : (parent[static_cast<size_t>(x)] = find(parent[static_cast<size_t>(x)]));
+		return parent[static_cast<size_t>(x)] == x
+				   ? x
+				   : (parent[static_cast<size_t>(x)] = find(parent[static_cast<size_t>(x)]));
 	}
 	void unite(int a, int b) {
 		a = find(a);
@@ -245,28 +255,29 @@ struct Dsu {
 	}
 };
 
-double signedDistanceAt(
-	const std::array<double, 3>& q,
-	const TriMeshAABBTree& tree,
-	const std::vector<std::array<double, 3>>& extVerts,
-	const std::vector<TriMeshFace>& extFaces) {
+double signedDistanceAt(const std::array<double, 3>& q,
+						const TriMeshAABBTree& tree,
+						const std::vector<std::array<double, 3>>& extVerts,
+						const std::vector<TriMeshFace>& extFaces) {
 	const auto hit = tree.closest_point(q);
 	if (!hit) {
 		return std::numeric_limits<double>::quiet_NaN();
 	}
 	const std::array<double, 3>& c = hit->closest;
 	Vec3d diff{static_cast<DefaultTriMesh::Scalar>(q[0] - c[0]),
-		static_cast<DefaultTriMesh::Scalar>(q[1] - c[1]),
-		static_cast<DefaultTriMesh::Scalar>(q[2] - c[2])};
+			   static_cast<DefaultTriMesh::Scalar>(q[1] - c[1]),
+			   static_cast<DefaultTriMesh::Scalar>(q[2] - c[2])};
 	const double dist = std::sqrt(std::max(0.0, hit->squared_distance));
 	const TriMeshFace& tf = extFaces[hit->primitive_index];
 	const auto& pa = extVerts[tf[0]];
 	const auto& pb = extVerts[tf[1]];
 	const auto& pc = extVerts[tf[2]];
-	Vec3d va{static_cast<DefaultTriMesh::Scalar>(pb[0] - pa[0]), static_cast<DefaultTriMesh::Scalar>(pb[1] - pa[1]),
-		static_cast<DefaultTriMesh::Scalar>(pb[2] - pa[2])};
-	Vec3d vb{static_cast<DefaultTriMesh::Scalar>(pc[0] - pa[0]), static_cast<DefaultTriMesh::Scalar>(pc[1] - pa[1]),
-		static_cast<DefaultTriMesh::Scalar>(pc[2] - pa[2])};
+	Vec3d va{static_cast<DefaultTriMesh::Scalar>(pb[0] - pa[0]),
+			 static_cast<DefaultTriMesh::Scalar>(pb[1] - pa[1]),
+			 static_cast<DefaultTriMesh::Scalar>(pb[2] - pa[2])};
+	Vec3d vb{static_cast<DefaultTriMesh::Scalar>(pc[0] - pa[0]),
+			 static_cast<DefaultTriMesh::Scalar>(pc[1] - pa[1]),
+			 static_cast<DefaultTriMesh::Scalar>(pc[2] - pa[2])};
 	Vec3d n = va % vb;
 	const double nl = static_cast<double>(n.norm());
 	if (nl < 1e-30) {
@@ -283,9 +294,13 @@ PeriodicTriMesh::PeriodicTriMesh() {
 	halfPeriod_ = {1.0, 1.0, 1.0};
 }
 
-void PeriodicTriMesh::setHalfPeriod(const Vec3d& halfPeriod) { halfPeriod_ = halfPeriod; }
+void PeriodicTriMesh::setHalfPeriod(const Vec3d& halfPeriod) {
+	halfPeriod_ = halfPeriod;
+}
 
-PeriodicTriMesh::Vec3d PeriodicTriMesh::halfPeriod() const { return halfPeriod_; }
+PeriodicTriMesh::Vec3d PeriodicTriMesh::halfPeriod() const {
+	return halfPeriod_;
+}
 
 PeriodicTriMesh::Vec3d PeriodicTriMesh::wrapVector(const Vec3d& v) const {
 	Vec3d out = v;
@@ -303,7 +318,9 @@ PeriodicTriMesh::Vec3d PeriodicTriMesh::wrapVector(const Vec3d& v) const {
 	return out;
 }
 
-PeriodicTriMesh::Vec3d PeriodicTriMesh::shift2origin(const Vec3d& p) const { return wrapVector(p); }
+PeriodicTriMesh::Vec3d PeriodicTriMesh::shift2origin(const Vec3d& p) const {
+	return wrapVector(p);
+}
 
 void PeriodicTriMesh::shift2originInPlace() {
 	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
@@ -419,15 +436,21 @@ using SegAABBTraits = CGAL::AABB_traits<CgalK, SegPrimitive>;
 using SegAABBTree = CGAL::AABB_tree<SegAABBTraits>;
 
 CgalPoint toCgal(const PeriodicTriMesh::Vec3d& p) {
-	return CgalPoint(static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2]));
+	return CgalPoint(
+		static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2]));
 }
 
 // Determine whether p is near an endpoint of the segment
-int isEndpoint(const CgalPoint& p, const PeriodicTriMesh::Vec3d& v0, const PeriodicTriMesh::Vec3d& v1, double eps) {
+int isEndpoint(const CgalPoint& p,
+			   const PeriodicTriMesh::Vec3d& v0,
+			   const PeriodicTriMesh::Vec3d& v1,
+			   double eps) {
 	double d0 = CGAL::squared_distance(p, toCgal(v0));
 	double d1 = CGAL::squared_distance(p, toCgal(v1));
-	if (d0 < eps * eps) return 0;
-	if (d1 < eps * eps) return 1;
+	if (d0 < eps * eps)
+		return 0;
+	if (d1 < eps * eps)
+		return 1;
 	return -1;
 }
 
@@ -449,7 +472,9 @@ struct PeriodicVertexGrid {
 	std::vector<std::array<double, 3>> points;
 	int counter = 0;
 
-	PeriodicVertexGrid(const std::array<double, 3>& orig, const std::array<double, 3>& diag, double eps)
+	PeriodicVertexGrid(const std::array<double, 3>& orig,
+					   const std::array<double, 3>& diag,
+					   double eps)
 		: origin(orig) {
 		invH = 1.0 / eps;
 		for (int i = 0; i < 3; ++i)
@@ -476,7 +501,8 @@ struct PeriodicVertexGrid {
 	int insert(double px, double py, double pz) {
 		auto idx = raster(px, py, pz);
 		auto it = lattice.find(idx);
-		if (it != lattice.end()) return it->second;
+		if (it != lattice.end())
+			return it->second;
 		// Write to the 27-neighborhood
 		auto pt = deraster(idx);
 		points.push_back(pt);
@@ -517,7 +543,8 @@ static void collapseShortBoundaryEdges(
 	std::vector<EdgeHandle> edgesToCollapse;
 	for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it) {
 		const EdgeHandle eh = *e_it;
-		if (!eh.is_valid()) continue;
+		if (!eh.is_valid())
+			continue;
 		const HalfedgeHandle he = mesh.halfedge_handle(eh, 0);
 		const VertexHandle vFrom = mesh.from_vertex_handle(he);
 		const VertexHandle vTo = mesh.to_vertex_handle(he);
@@ -532,8 +559,10 @@ static void collapseShortBoundaryEdges(
 		}
 	}
 	for (const EdgeHandle& eh : edgesToCollapse) {
-		if (!eh.is_valid() || eh.idx() < 0 || static_cast<std::size_t>(eh.idx()) >= mesh.n_edges()) continue;
-		if (mesh.status(eh).deleted()) continue;
+		if (!eh.is_valid() || eh.idx() < 0 || static_cast<std::size_t>(eh.idx()) >= mesh.n_edges())
+			continue;
+		if (mesh.status(eh).deleted())
+			continue;
 		const HalfedgeHandle he = mesh.halfedge_handle(eh, 0);
 		const VertexHandle vFrom = mesh.from_vertex_handle(he);
 		const VertexHandle vTo = mesh.to_vertex_handle(he);
@@ -546,9 +575,11 @@ static void collapseShortBoundaryEdges(
 		if ((~common) & flagFrom) {
 			// from has flags that to doesn't -> collapse he.opp (keep from)
 			const HalfedgeHandle oppHe = mesh.halfedge_handle(eh, 1);
-			if (mesh.is_collapse_ok(oppHe)) mesh.collapse(oppHe);
+			if (mesh.is_collapse_ok(oppHe))
+				mesh.collapse(oppHe);
 		} else {
-			if (mesh.is_collapse_ok(he)) mesh.collapse(he);
+			if (mesh.is_collapse_ok(he))
+				mesh.collapse(he);
 		}
 	}
 	mesh.garbage_collection();
@@ -559,13 +590,15 @@ static void collapseShortBoundaryEdges(
 // Step 4 helper: vertex welding (periodic deduplication) + mesh rebuild.
 // Extracts V/F, deduplicates with periodic grid hash, rebuilds face table
 // (skipping degenerate), unifies orientation via BFS, and rebuilds OpenMesh.
-static void weldAndRebuildMesh(
-	PeriodicTriMesh& mesh,
-	double weldTol,
-	double Lx, double Ly, double Lz,
-	const double domMin[3]) {
+static void weldAndRebuildMesh(PeriodicTriMesh& mesh,
+							   double weldTol,
+							   double Lx,
+							   double Ly,
+							   double Lz,
+							   const double domMin[3]) {
 
 	using VertexHandle = PeriodicTriMesh::VertexHandle;
+	using HalfedgeHandle = PeriodicTriMesh::HalfedgeHandle;
 	using Vec3d = PeriodicTriMesh::Vec3d;
 
 	// Extract V, F
@@ -581,8 +614,10 @@ static void weldAndRebuildMesh(
 	faces.reserve(nf);
 	for (auto f_it = mesh.faces_begin(); f_it != mesh.faces_end(); ++f_it) {
 		auto fv = mesh.cfv_iter(*f_it);
-		int a = (*fv).idx(); ++fv;
-		int b = (*fv).idx(); ++fv;
+		int a = (*fv).idx();
+		++fv;
+		int b = (*fv).idx();
+		++fv;
 		int c = (*fv).idx();
 		faces.push_back({a, b, c});
 	}
@@ -591,7 +626,7 @@ static void weldAndRebuildMesh(
 	const double res = weldTol;
 	struct GridKey {
 		int64_t x, y, z;
-		bool operator==(const GridKey& o) const { return x==o.x && y==o.y && z==o.z; }
+		bool operator==(const GridKey& o) const { return x == o.x && y == o.y && z == o.z; }
 	};
 	struct GridHash {
 		std::size_t operator()(const GridKey& k) const {
@@ -608,9 +643,24 @@ static void weldAndRebuildMesh(
 		double wx = verts[i][0] - domMin[0];
 		double wy = verts[i][1] - domMin[1];
 		double wz = verts[i][2] - domMin[2];
-		while (wx < -1e-8) wx += Lx; while (wx >= Lx - 1e-8) wx -= Lx; if (wx < 0) wx = 0;
-		while (wy < -1e-8) wy += Ly; while (wy >= Ly - 1e-8) wy -= Ly; if (wy < 0) wy = 0;
-		while (wz < -1e-8) wz += Lz; while (wz >= Lz - 1e-8) wz -= Lz; if (wz < 0) wz = 0;
+		while (wx < -1e-8)
+			wx += Lx;
+		while (wx >= Lx - 1e-8)
+			wx -= Lx;
+		if (wx < 0)
+			wx = 0;
+		while (wy < -1e-8)
+			wy += Ly;
+		while (wy >= Ly - 1e-8)
+			wy -= Ly;
+		if (wy < 0)
+			wy = 0;
+		while (wz < -1e-8)
+			wz += Lz;
+		while (wz >= Lz - 1e-8)
+			wz -= Lz;
+		if (wz < 0)
+			wz = 0;
 
 		GridKey key{static_cast<int64_t>(std::round(wx / res)),
 					static_cast<int64_t>(std::round(wy / res)),
@@ -633,7 +683,8 @@ static void weldAndRebuildMesh(
 		int fa = vmap[static_cast<std::size_t>(f[0])];
 		int fb = vmap[static_cast<std::size_t>(f[1])];
 		int fc = vmap[static_cast<std::size_t>(f[2])];
-		if (fa == fb || fb == fc || fa == fc) continue;
+		if (fa == fb || fb == fc || fa == fc)
+			continue;
 		newFaces.push_back({fa, fb, fc});
 	}
 
@@ -667,8 +718,10 @@ static void weldAndRebuildMesh(
 	std::vector<std::array<int, 3>> FF(static_cast<std::size_t>(nNewF), {-1, -1, -1});
 	for (auto& [ek, flist] : edge2faces) {
 		if (flist.size() == 2) {
-			FF[static_cast<std::size_t>(flist[0].first)][static_cast<std::size_t>(flist[0].second)] = flist[1].first;
-			FF[static_cast<std::size_t>(flist[1].first)][static_cast<std::size_t>(flist[1].second)] = flist[0].first;
+			FF[static_cast<std::size_t>(flist[0].first)]
+			  [static_cast<std::size_t>(flist[0].second)] = flist[1].first;
+			FF[static_cast<std::size_t>(flist[1].first)]
+			  [static_cast<std::size_t>(flist[1].second)] = flist[0].first;
 		}
 	}
 
@@ -677,7 +730,8 @@ static void weldAndRebuildMesh(
 	std::queue<int> bfsQueue;
 	// There may be multiple connected components
 	for (int startF = 0; startF < nNewF; ++startF) {
-		if (visited[static_cast<std::size_t>(startF)]) continue;
+		if (visited[static_cast<std::size_t>(startF)])
+			continue;
 		visited[static_cast<std::size_t>(startF)] = true;
 		bfsQueue.push(startF);
 		while (!bfsQueue.empty()) {
@@ -686,7 +740,8 @@ static void weldAndRebuildMesh(
 			const auto& srcF = newFaces[static_cast<std::size_t>(fi)];
 			for (int ei = 0; ei < 3; ++ei) {
 				int nb = FF[static_cast<std::size_t>(fi)][static_cast<std::size_t>(ei)];
-				if (nb < 0 || visited[static_cast<std::size_t>(nb)]) continue;
+				if (nb < 0 || visited[static_cast<std::size_t>(nb)])
+					continue;
 				visited[static_cast<std::size_t>(nb)] = true;
 				// Check whether the shared edge has consistent orientation in both triangles
 				int sv0 = srcF[static_cast<std::size_t>(ei)];
@@ -695,19 +750,113 @@ static void weldAndRebuildMesh(
 				// Find the shared edge order in dst
 				int ci0 = -1, ci1 = -1;
 				for (int k = 0; k < 3; ++k) {
-					if (dstF[static_cast<std::size_t>(k)] == sv0) ci0 = k;
-					if (dstF[static_cast<std::size_t>(k)] == sv1) ci1 = k;
+					if (dstF[static_cast<std::size_t>(k)] == sv0)
+						ci0 = k;
+					if (dstF[static_cast<std::size_t>(k)] == sv1)
+						ci1 = k;
 				}
 				if (ci0 >= 0 && ci1 >= 0) {
 					// In correct orientation, src's (v0,v1) edge should appear as (v1,v0) in dst
 					// i.e., sv1 should precede sv0 in dst (mod 3), meaning (ci1+1)%3 == ci0
 					if ((ci0 + 1) % 3 == ci1) {
 						// Same direction -> need to flip dst
-						std::swap(dstF[static_cast<std::size_t>(ci0)], dstF[static_cast<std::size_t>(ci1)]);
-						// Update FF (local edge indices change after flip, but BFS only uses visited, no precise update needed)
+						std::swap(dstF[static_cast<std::size_t>(ci0)],
+								  dstF[static_cast<std::size_t>(ci1)]);
+						// Update FF (local edge indices change after flip, but BFS only uses
+						// visited, no precise update needed)
 					}
 				}
 				bfsQueue.push(nb);
+			}
+		}
+	}
+
+	// Fill small boundary holes (open edge loops from projection/weld)
+	{
+		auto packEdge = [](int u, int v) -> std::uint64_t {
+			const int lo = std::min(u, v), hi = std::max(u, v);
+			return (static_cast<std::uint64_t>(lo) << 32) | static_cast<std::uint64_t>(hi);
+		};
+		std::unordered_set<std::uint64_t> openEdges;
+		std::unordered_map<int, std::vector<int>> openAdj;
+		for (const auto& [ek, flist] : edge2faces) {
+			if (flist.size() != 1)
+				continue;
+			openEdges.insert(packEdge(ek.lo, ek.hi));
+			openAdj[ek.lo].push_back(ek.hi);
+			openAdj[ek.hi].push_back(ek.lo);
+		}
+
+		auto orientHoleTri = [&](int va, int vb, int vc) -> std::array<int, 3> {
+			const EdgeKey ek{std::min(va, vb), std::max(va, vb)};
+			const auto it = edge2faces.find(ek);
+			if (it != edge2faces.end() && it->second.size() == 1) {
+				const int fi = it->second[0].first;
+				const int ei = it->second[0].second;
+				const int f0 = newFaces[static_cast<std::size_t>(fi)][static_cast<std::size_t>(ei)];
+				const int f1 =
+					newFaces[static_cast<std::size_t>(fi)][static_cast<std::size_t>((ei + 1) % 3)];
+				if (f0 == va && f1 == vb)
+					return {vb, va, vc};
+				if (f0 == vb && f1 == va)
+					return {va, vb, vc};
+			}
+			return {va, vb, vc};
+		};
+
+		std::unordered_set<std::uint64_t> usedEdges;
+		for (const std::uint64_t ekey : openEdges) {
+			if (usedEdges.count(ekey))
+				continue;
+			const int start = static_cast<int>(ekey >> 32);
+			const int second = static_cast<int>(ekey & 0xFFFFFFFFu);
+			std::vector<int> cycle;
+			int cur = start, prev = -1;
+			do {
+				cycle.push_back(cur);
+				int next = -1;
+				for (int nb : openAdj[cur]) {
+					if (nb == prev)
+						continue;
+					if (!openEdges.count(packEdge(cur, nb)))
+						continue;
+					next = nb;
+					break;
+				}
+				if (next < 0)
+					break;
+				prev = cur;
+				cur = next;
+			} while (cur != start && static_cast<int>(cycle.size()) < 8);
+			if (cur != start || static_cast<int>(cycle.size()) < 3)
+				continue;
+
+			bool loopOk = true;
+			for (std::size_t i = 0; i < cycle.size(); ++i) {
+				if (!openEdges.count(packEdge(cycle[i], cycle[(i + 1) % cycle.size()]))) {
+					loopOk = false;
+					break;
+				}
+			}
+			if (!loopOk)
+				continue;
+
+			const int n = static_cast<int>(cycle.size());
+			for (int i = 1; i + 1 < n; ++i) {
+				std::array<int, 3> tri;
+				if (i == 1) {
+					tri = orientHoleTri(cycle[0], cycle[1], cycle[2]);
+				} else {
+					tri = orientHoleTri(cycle[static_cast<std::size_t>(i)],
+										cycle[static_cast<std::size_t>(i + 1)],
+										cycle[0]);
+				}
+				if (tri[0] == tri[1] || tri[1] == tri[2] || tri[0] == tri[2])
+					continue;
+				newFaces.push_back(tri);
+			}
+			for (std::size_t i = 0; i < cycle.size(); ++i) {
+				usedEdges.insert(packEdge(cycle[i], cycle[(i + 1) % cycle.size()]));
 			}
 		}
 	}
@@ -718,28 +867,26 @@ static void weldAndRebuildMesh(
 	newVH.reserve(static_cast<std::size_t>(nNewV));
 	for (int i = 0; i < nNewV; ++i) {
 		const auto& pt = uniqueVerts[static_cast<std::size_t>(i)];
-		newVH.push_back(mesh.add_vertex(Vec3d(
-			static_cast<DefaultTriMesh::Scalar>(pt[0]),
-			static_cast<DefaultTriMesh::Scalar>(pt[1]),
-			static_cast<DefaultTriMesh::Scalar>(pt[2]))));
+		newVH.push_back(mesh.add_vertex(Vec3d(static_cast<DefaultTriMesh::Scalar>(pt[0]),
+											  static_cast<DefaultTriMesh::Scalar>(pt[1]),
+											  static_cast<DefaultTriMesh::Scalar>(pt[2]))));
 	}
 	for (const auto& f : newFaces) {
-		auto fh = mesh.add_face(
-			newVH[static_cast<std::size_t>(f[0])],
-			newVH[static_cast<std::size_t>(f[1])],
-			newVH[static_cast<std::size_t>(f[2])]);
+		auto fh = mesh.add_face(newVH[static_cast<std::size_t>(f[0])],
+								newVH[static_cast<std::size_t>(f[1])],
+								newVH[static_cast<std::size_t>(f[2])]);
 		if (!fh.is_valid()) {
-			mesh.add_face(
-				newVH[static_cast<std::size_t>(f[0])],
-				newVH[static_cast<std::size_t>(f[2])],
-				newVH[static_cast<std::size_t>(f[1])]);
+			mesh.add_face(newVH[static_cast<std::size_t>(f[0])],
+						  newVH[static_cast<std::size_t>(f[2])],
+						  newVH[static_cast<std::size_t>(f[1])]);
 		}
 	}
 	mesh.garbage_collection();
 
 	int bndE2 = 0;
 	for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it)
-		if (mesh.is_boundary(*e_it)) ++bndE2;
+		if (mesh.is_boundary(*e_it))
+			++bndE2;
 	std::cerr << "[merge] after weld: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
 			  << " bnd=" << bndE2 << "\n";
 }
@@ -769,19 +916,29 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 	const double domMin[3] = {0.0, 0.0, 0.0};
 	const double domMax[3] = {Lx, Ly, Lz};
 
-	// Boundary tolerance: must be wide enough to cover vertices that CGAL remesh may push away
-	const double borderTol = std::max(1e-10, 1e-3 * std::min({Lx, Ly, Lz}));
+	// Boundary tolerance: strict face snap so slightly-inset verts are not tagged as period faces
+	const double borderTol = 1e-5;
 
 	// ── Step 1: classify all boundary vertices ──
 	auto classifyVertices = [&]() {
 		std::unordered_map<int, BoundaryFlag> vtag;
 		for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
-			if (!this->is_boundary(*v_it)) continue;
+			if (!this->is_boundary(*v_it))
+				continue;
 			const Vec3d& p = this->point(*v_it);
 			BoundaryFlag bf;
-			bf.classify(static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2]),
-						domMin[0], domMax[0], domMin[1], domMax[1], domMin[2], domMax[2], borderTol);
-			if (bf.isBoundary()) vtag[(*v_it).idx()] = bf;
+			bf.classify(static_cast<double>(p[0]),
+						static_cast<double>(p[1]),
+						static_cast<double>(p[2]),
+						domMin[0],
+						domMax[0],
+						domMin[1],
+						domMax[1],
+						domMin[2],
+						domMax[2],
+						borderTol);
+			if (bf.isBoundary())
+				vtag[(*v_it).idx()] = bf;
 		}
 		return vtag;
 	};
@@ -793,21 +950,26 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 
 	// ── Step 3: project max->min boundary using CGAL AABB segment tree ──
 	auto buildSegTree = [&](bool buildMin) {
-		// Collect halfedges on the target boundary face: a halfedge is a candidate if both endpoints are boundary vertices
+		// Collect halfedges on the target boundary face: a halfedge is a candidate if both
+		// endpoints are boundary vertices
 		std::vector<std::pair<HalfedgeHandle, int>> bndHEs; // halfedge + periodic boundary mask
 		for (auto e_it = this->edges_begin(); e_it != this->edges_end(); ++e_it) {
-			if (!this->is_boundary(*e_it)) continue;
+			if (!this->is_boundary(*e_it))
+				continue;
 			for (int side = 0; side < 2; ++side) {
 				const HalfedgeHandle he = this->halfedge_handle(*e_it, side);
-				if (!this->is_boundary(he)) continue;
+				if (!this->is_boundary(he))
+					continue;
 				const VertexHandle vf = this->from_vertex_handle(he);
 				const VertexHandle vt = this->to_vertex_handle(he);
 				auto itF = vtag.find(vf.idx());
 				auto itT = vtag.find(vt.idx());
 				// Both endpoints must be boundary vertices on the same face
-				if (itF == vtag.end() || itT == vtag.end()) continue;
+				if (itF == vtag.end() || itT == vtag.end())
+					continue;
 				int mask = itF->second.getMask() & itT->second.getMask();
-				if (!mask) continue;
+				if (!mask)
+					continue;
 				bool isMinEdge = (mask & BoundaryFlag::kMinMask) != 0;
 				bool isMaxEdge = (mask & BoundaryFlag::kMaxMask) != 0;
 				if (buildMin ? isMinEdge : isMaxEdge) {
@@ -833,29 +995,37 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 			splittedHE[static_cast<int>(i)].clear();
 			splittedHE[static_cast<int>(i)].push_back(he);
 		}
-		if (segments.empty()) return;
+		if (segments.empty())
+			return;
 
 		SegAABBTree tree(segments.begin(), segments.end());
 		tree.build();
 
-		int srcCount = 0, projectedCount = 0, splitCount = 0;
 		// Project source endpoints
 		for (auto& [vidx, bf] : vtag) {
 			const VertexHandle vh(vidx);
-			if (vidx < 0 || static_cast<std::size_t>(vidx) >= this->n_vertices()) continue;
-			if (this->status(vh).deleted()) continue;
+			if (vidx < 0 || static_cast<std::size_t>(vidx) >= this->n_vertices())
+				continue;
+			if (this->status(vh).deleted())
+				continue;
 			bool isSource = projectMaxToMin ? bf.isMaxBoundary() : bf.isMinBoundary();
-			if (!isSource) continue;
-			++srcCount;
+			if (!isSource)
+				continue;
 
 			Vec3d p = this->point(vh);
-			// Translate to the target side
+			// Translate to the target side (integer period only)
 			Vec3d translated = p;
 			for (int ax = 0; ax < 3; ++ax) {
 				if (projectMaxToMin) {
-					if (bf.isMaxBoundary(ax)) translated[ax] -= static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax]);
+					if (bf.isMaxBoundary(ax)) {
+						const auto L = static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax]);
+						translated[ax] -= L;
+					}
 				} else {
-					if (bf.isMinBoundary(ax)) translated[ax] += static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax]);
+					if (bf.isMinBoundary(ax)) {
+						const auto L = static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax]);
+						translated[ax] += L;
+					}
 				}
 			}
 
@@ -865,17 +1035,17 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 			if (sqDist > projTol * projTol) {
 				continue;
 			}
-			++projectedCount;
 			std::size_t primIdx = result.second->second;
 			auto& heSplits = splittedHE[static_cast<int>(primIdx)];
 
 			// Find the sub-halfedge (after splits) that contains the closest point
-			bool matched = false;
 			for (std::size_t k = 0; k < heSplits.size(); ++k) {
 				const HalfedgeHandle he = heSplits[k];
-				if (!he.is_valid()) continue;
+				if (!he.is_valid())
+					continue;
 				const EdgeHandle eeh = this->edge_handle(he);
-				if (!eeh.is_valid() || this->status(eeh).deleted()) continue;
+				if (!eeh.is_valid() || this->status(eeh).deleted())
+					continue;
 				const Vec3d& hFrom = this->point(this->from_vertex_handle(he));
 				const Vec3d& hTo = this->point(this->to_vertex_handle(he));
 				// Use 1% of edge length as endpoint detection tolerance
@@ -886,39 +1056,44 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 					// Matched the from-endpoint
 					Vec3d trans{};
 					for (int ax = 0; ax < 3; ++ax) {
-						trans[ax] = projectMaxToMin
-							? static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax])
-							: static_cast<DefaultTriMesh::Scalar>(-(domMax[ax] - domMin[ax]));
+						trans[ax] =
+							projectMaxToMin
+								? static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax])
+								: static_cast<DefaultTriMesh::Scalar>(-(domMax[ax] - domMin[ax]));
 						if (projectMaxToMin ? !bf.isMaxBoundary(ax) : !bf.isMinBoundary(ax))
 							trans[ax] = 0;
 					}
-					this->set_point(vh, hFrom + trans);
-					matched = true;
+					const Vec3d newPos = hFrom + trans;
+					this->set_point(vh, newPos);
 					break;
 				} else if (endId == 1) {
 					Vec3d trans{};
 					for (int ax = 0; ax < 3; ++ax) {
-						trans[ax] = projectMaxToMin
-							? static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax])
-							: static_cast<DefaultTriMesh::Scalar>(-(domMax[ax] - domMin[ax]));
+						trans[ax] =
+							projectMaxToMin
+								? static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax])
+								: static_cast<DefaultTriMesh::Scalar>(-(domMax[ax] - domMin[ax]));
 						if (projectMaxToMin ? !bf.isMaxBoundary(ax) : !bf.isMinBoundary(ax))
 							trans[ax] = 0;
 					}
-					this->set_point(vh, hTo + trans);
-					matched = true;
+					const Vec3d newPos = hTo + trans;
+					this->set_point(vh, newPos);
 					break;
 				} else {
 					// Need to split: insert a new vertex at the projected point on the target edge
 					const Vec3d newPt(static_cast<DefaultTriMesh::Scalar>(closest.x()),
 									  static_cast<DefaultTriMesh::Scalar>(closest.y()),
 									  static_cast<DefaultTriMesh::Scalar>(closest.z()));
-					// Check that the projected point is not at an edge endpoint (avoid degenerate split)
-					// Only split if the parameter t is in the [0.02, 0.98] range (not too close to endpoints)
+					// Check that the projected point is not at an edge endpoint (avoid degenerate
+					// split) Only split if the parameter t is in the [0.02, 0.98] range (not too
+					// close to endpoints)
 					const Vec3d edgeVec = hTo - hFrom;
 					const double edgeLen = edgeVec.norm();
-					if (edgeLen < 1e-15) continue;
+					if (edgeLen < 1e-15)
+						continue;
 					double t = static_cast<double>((newPt - hFrom) | edgeVec) / (edgeLen * edgeLen);
-					if (t < 0.02 || t > 0.98) continue;
+					if (t < 0.02 || t > 0.98)
+						continue;
 
 					VertexHandle newVH = this->add_vertex(newPt);
 					this->split(this->edge_handle(he), newVH);
@@ -926,13 +1101,15 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 					// Set the source vertex position
 					Vec3d trans{};
 					for (int ax = 0; ax < 3; ++ax) {
-						trans[ax] = projectMaxToMin
-							? static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax])
-							: static_cast<DefaultTriMesh::Scalar>(-(domMax[ax] - domMin[ax]));
+						trans[ax] =
+							projectMaxToMin
+								? static_cast<DefaultTriMesh::Scalar>(domMax[ax] - domMin[ax])
+								: static_cast<DefaultTriMesh::Scalar>(-(domMax[ax] - domMin[ax]));
 						if (projectMaxToMin ? !bf.isMaxBoundary(ax) : !bf.isMinBoundary(ax))
 							trans[ax] = 0;
 					}
-					this->set_point(vh, newPt + trans);
+					const Vec3d newPos = newPt + trans;
+					this->set_point(vh, newPos);
 
 					// Record the new halfedges produced by the split
 					if (this->point(this->to_vertex_handle(he)) == newPt) {
@@ -940,13 +1117,10 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 					} else {
 						heSplits.push_back(this->prev_halfedge_handle(he));
 					}
-					matched = true;
 					break;
 				}
 			}
-			(void)matched;
 		}
-		(void)srcCount; (void)projectedCount;
 	};
 
 	// max->min projection
@@ -965,7 +1139,8 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 
 // ──────────────────────────────────────────────────────────────────────────
 // removeNonPeriodicIslands
-// Detect and remove connected components that do not span a full period (aligned with minsurf deleteisoisland BFS approach)
+// Detect and remove connected components that do not span a full period (aligned with minsurf
+// deleteisoisland BFS approach)
 // ──────────────────────────────────────────────────────────────────────────
 
 // Keep only the largest connected component (by face count)
@@ -976,25 +1151,30 @@ int PeriodicTriMesh::keepLargestComponent() {
 	this->request_face_status();
 
 	const std::size_t nf = this->n_faces();
-	if (nf == 0) return 0;
+	if (nf == 0)
+		return 0;
 	std::vector<int> compId(nf, -1);
 	std::vector<int> compSize;
 	int nComp = 0;
 	for (std::size_t fi = 0; fi < nf; ++fi) {
-		if (compId[fi] >= 0) continue;
+		if (compId[fi] >= 0)
+			continue;
 		std::queue<int> q;
 		q.push(static_cast<int>(fi));
 		compId[fi] = nComp;
 		int sz = 0;
 		while (!q.empty()) {
-			int fid = q.front(); q.pop();
+			int fid = q.front();
+			q.pop();
 			++sz;
 			auto fh = this->face_handle(fid);
 			for (auto fh_it = this->cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
 				auto opp = this->opposite_halfedge_handle(*fh_it);
-				if (this->is_boundary(opp)) continue;
+				if (this->is_boundary(opp))
+					continue;
 				int adj = this->face_handle(opp).idx();
-				if (adj >= 0 && static_cast<std::size_t>(adj) < nf && compId[static_cast<std::size_t>(adj)] < 0) {
+				if (adj >= 0 && static_cast<std::size_t>(adj) < nf &&
+					compId[static_cast<std::size_t>(adj)] < 0) {
 					compId[static_cast<std::size_t>(adj)] = nComp;
 					q.push(adj);
 				}
@@ -1003,11 +1183,14 @@ int PeriodicTriMesh::keepLargestComponent() {
 		compSize.push_back(sz);
 		++nComp;
 	}
-	if (nComp <= 1) return 0;
-	int maxComp = static_cast<int>(std::max_element(compSize.begin(), compSize.end()) - compSize.begin());
+	if (nComp <= 1)
+		return 0;
+	int maxComp =
+		static_cast<int>(std::max_element(compSize.begin(), compSize.end()) - compSize.begin());
 	for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
 		int cid = compId[static_cast<std::size_t>((*f_it).idx())];
-		if (cid != maxComp) this->delete_face(*f_it, true);
+		if (cid != maxComp)
+			this->delete_face(*f_it, true);
 	}
 	this->garbage_collection();
 	return nComp - 1;
@@ -1020,11 +1203,9 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 	this->request_face_status();
 
 	const Vec3d hp = halfPeriod_;
-	const double fullPeriod[3] = {
-		2.0 * static_cast<double>(hp[0]),
-		2.0 * static_cast<double>(hp[1]),
-		2.0 * static_cast<double>(hp[2])
-	};
+	const double fullPeriod[3] = {2.0 * static_cast<double>(hp[0]),
+								  2.0 * static_cast<double>(hp[1]),
+								  2.0 * static_cast<double>(hp[2])};
 
 	// Find connected components
 	const std::size_t nvTotal = this->n_vertices();
@@ -1032,12 +1213,14 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 	std::vector<VertexHandle> compSeed;
 	int nComp = 0;
 	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
-		if (compId[static_cast<std::size_t>((*v_it).idx())] >= 0) continue;
+		if (compId[static_cast<std::size_t>((*v_it).idx())] >= 0)
+			continue;
 		std::queue<int> q;
 		q.push((*v_it).idx());
 		compId[static_cast<std::size_t>((*v_it).idx())] = nComp;
 		while (!q.empty()) {
-			int vi = q.front(); q.pop();
+			int vi = q.front();
+			q.pop();
 			for (auto voh = this->cvoh_iter(VertexHandle(vi)); voh.is_valid(); ++voh) {
 				int nb = this->to_vertex_handle(*voh).idx();
 				if (compId[static_cast<std::size_t>(nb)] < 0) {
@@ -1050,7 +1233,8 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 		++nComp;
 	}
 
-	if (nComp <= 1) return 0;
+	if (nComp <= 1)
+		return 0;
 
 	// For each connected component, check whether it spans at least one axis period
 	std::vector<bool> shouldRemove(static_cast<std::size_t>(nComp), true);
@@ -1065,12 +1249,14 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 			while (!bfs.empty() && maxDist < fullPeriod[axis]) {
 				auto [vi, dist] = bfs.front();
 				bfs.pop();
-				if (dist - vdist[static_cast<std::size_t>(vi)] < -1e-6) continue;
+				if (dist - vdist[static_cast<std::size_t>(vi)] < -1e-6)
+					continue;
 				vdist[static_cast<std::size_t>(vi)] = dist;
 				maxDist = std::max(maxDist, dist);
 				for (auto voh = this->cvoh_iter(VertexHandle(vi)); voh.is_valid(); ++voh) {
 					int nb = this->to_vertex_handle(*voh).idx();
-					Vec3d ev = wrapVector(this->point(VertexHandle(nb)) - this->point(VertexHandle(vi)));
+					Vec3d ev =
+						wrapVector(this->point(VertexHandle(nb)) - this->point(VertexHandle(vi)));
 					double nbDist = dist + static_cast<double>(ev[axis]);
 					if (nbDist > vdist[static_cast<std::size_t>(nb)]) {
 						bfs.push({nb, nbDist});
@@ -1092,14 +1278,18 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 		int ci = compId[static_cast<std::size_t>((*v_it).idx())];
 		if (ci >= 0 && shouldRemove[static_cast<std::size_t>(ci)]) {
 			for (auto vf = this->cvf_iter(*v_it); vf.is_valid(); ++vf)
-				if (!this->status(*vf).deleted()) { this->delete_face(*vf, false); ++deletedFaces; }
+				if (!this->status(*vf).deleted()) {
+					this->delete_face(*vf, false);
+					++deletedFaces;
+				}
 		}
 	}
 
 	if (deletedFaces > 0) {
 		this->garbage_collection();
 		std::cerr << "[removeNonPeriodicIslands] removed " << deletedFaces << " faces from "
-				  << std::count(shouldRemove.begin(), shouldRemove.end(), true) << " non-periodic components\n";
+				  << std::count(shouldRemove.begin(), shouldRemove.end(), true)
+				  << " non-periodic components\n";
 	}
 
 	return deletedFaces;
@@ -1115,8 +1305,10 @@ void PeriodicTriMesh::periodShift() {
 		for (int i = 0; i < 3; ++i) {
 			const double period = 2.0 * static_cast<double>(halfPeriod_[i]);
 			double pi = static_cast<double>(p[i]);
-			if (pi < -1e-5) p[i] += static_cast<DefaultTriMesh::Scalar>(period);
-			else if (pi > period + 1e-5) p[i] -= static_cast<DefaultTriMesh::Scalar>(period);
+			if (pi < -1e-5)
+				p[i] += static_cast<DefaultTriMesh::Scalar>(period);
+			else if (pi > period + 1e-5)
+				p[i] -= static_cast<DefaultTriMesh::Scalar>(period);
 		}
 		this->set_point(*v_it, p);
 	}
@@ -1135,19 +1327,18 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 
 	periodShift();
 
-	const double hp[3] = {
-		static_cast<double>(halfPeriod_[0]),
-		static_cast<double>(halfPeriod_[1]),
-		static_cast<double>(halfPeriod_[2])
-	};
-	const double L[3] = { 2.0 * hp[0], 2.0 * hp[1], 2.0 * hp[2] };
+	const double hp[3] = {static_cast<double>(halfPeriod_[0]),
+						  static_cast<double>(halfPeriod_[1]),
+						  static_cast<double>(halfPeriod_[2])};
+	const double L[3] = {2.0 * hp[0], 2.0 * hp[1], 2.0 * hp[2]};
 
 	// ── Phase 1: split boundary-crossing edges at periodic boundaries ──
 	if (doSplitEdges) {
 		for (int axis = 0; axis < 3; ++axis) {
 			std::vector<EdgeHandle> toSplit;
 			for (auto e_it = this->edges_begin(); e_it != this->edges_end(); ++e_it) {
-				if (this->status(*e_it).deleted()) continue;
+				if (this->status(*e_it).deleted())
+					continue;
 				HalfedgeHandle he = this->halfedge_handle(*e_it, 0);
 				Vec3d p0 = this->point(this->from_vertex_handle(he));
 				Vec3d p1 = p0 + wrapVector(this->point(this->to_vertex_handle(he)) - p0);
@@ -1155,13 +1346,17 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 				double a0 = static_cast<double>(p0[axis]);
 				double a1 = static_cast<double>(p1[axis]);
 
-				if (std::abs(a0) < 1e-5 || std::abs(a0 - L[axis]) < 1e-5) continue;
-				if (std::abs(a1) < 1e-5 || std::abs(a1 - L[axis]) < 1e-5) continue;
-				if (a1 < -1e-5 || a1 > L[axis] + 1e-5) toSplit.push_back(*e_it);
+				if (std::abs(a0) < 1e-5 || std::abs(a0 - L[axis]) < 1e-5)
+					continue;
+				if (std::abs(a1) < 1e-5 || std::abs(a1 - L[axis]) < 1e-5)
+					continue;
+				if (a1 < -1e-5 || a1 > L[axis] + 1e-5)
+					toSplit.push_back(*e_it);
 			}
 
 			for (auto eh : toSplit) {
-				if (!eh.is_valid() || this->status(eh).deleted()) continue;
+				if (!eh.is_valid() || this->status(eh).deleted())
+					continue;
 				HalfedgeHandle he = this->halfedge_handle(eh, 0);
 				VertexHandle vFrom = this->from_vertex_handle(he);
 				VertexHandle vTo = this->to_vertex_handle(he);
@@ -1171,7 +1366,8 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 				double a1 = static_cast<double>(p1[axis]);
 				double cut = (a1 > L[axis]) ? L[axis] : 0.0;
 				double denom = a1 - a0;
-				if (std::abs(denom) < 1e-15) continue;
+				if (std::abs(denom) < 1e-15)
+					continue;
 				double t = (cut - a0) / denom;
 				if (t <= 1e-6) {
 					// split point nearly coincides with the from endpoint -> snap from to boundary
@@ -1186,8 +1382,9 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 				} else {
 					Vec3d c;
 					for (int k = 0; k < 3; ++k)
-						c[k] = static_cast<DefaultTriMesh::Scalar>(
-							(1.0 - t) * static_cast<double>(p0[k]) + t * static_cast<double>(p1[k]));
+						c[k] = static_cast<DefaultTriMesh::Scalar>((1.0 - t) *
+																	   static_cast<double>(p0[k]) +
+																   t * static_cast<double>(p1[k]));
 					this->split(eh, c);
 				}
 			}
@@ -1197,7 +1394,8 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 	}
 
 	// ── Phase 2: dupPeriodFaces (aligned with minsurf) ──
-	// Unfold periodic-crossing faces by edge, duplicate offset vertices, so all faces lie within [0, L]
+	// Unfold periodic-crossing faces by edge, duplicate offset vertices, so all faces lie within
+	// [0, L]
 	{
 		const std::size_t nv0 = this->n_vertices();
 		std::vector<std::array<double, 3>> vpos(nv0);
@@ -1206,21 +1404,27 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 			vpos[static_cast<std::size_t>((*v_it).idx())] = {
 				static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2])};
 		}
-		struct F3 { int v[3]; };
+		struct F3 {
+			int v[3];
+		};
 		std::vector<F3> flist;
 		flist.reserve(this->n_faces());
 		for (auto f_it = this->faces_begin(); f_it != this->faces_end(); ++f_it) {
 			auto fv = this->cfv_iter(*f_it);
-			int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+			int a = (*fv).idx();
+			++fv;
+			int b = (*fv).idx();
+			++fv;
+			int c = (*fv).idx();
 			flist.push_back({a, b, c});
 		}
 
 		// Lookup existing vertices by position->index
-		std::map<std::array<int,3>, int> posMap; // quantized coordinates -> vertex index
-		auto quantize = [&](double x, double y, double z) -> std::array<int,3> {
-			return { static_cast<int>(std::round(x * 1e5)),
-					 static_cast<int>(std::round(y * 1e5)),
-					 static_cast<int>(std::round(z * 1e5)) };
+		std::map<std::array<int, 3>, int> posMap; // quantized coordinates -> vertex index
+		auto quantize = [&](double x, double y, double z) -> std::array<int, 3> {
+			return {static_cast<int>(std::round(x * 1e5)),
+					static_cast<int>(std::round(y * 1e5)),
+					static_cast<int>(std::round(z * 1e5))};
 		};
 		for (std::size_t i = 0; i < nv0; ++i)
 			posMap[quantize(vpos[i][0], vpos[i][1], vpos[i][2])] = static_cast<int>(i);
@@ -1231,7 +1435,8 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 			double vnew[3][3];
 			for (int j = 0; j < 3; ++j)
 				for (int k = 0; k < 3; ++k)
-					vnew[j][k] = vpos[static_cast<std::size_t>(f.v[j])][static_cast<std::size_t>(k)];
+					vnew[j][k] =
+						vpos[static_cast<std::size_t>(f.v[j])][static_cast<std::size_t>(k)];
 
 			bool hasPeriod = false;
 			// Edge-based unfolding (aligned with minsurf dupPeriodFaces)
@@ -1239,8 +1444,13 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 				int j1 = (j + 1) % 3;
 				for (int k = 0; k < 3; ++k) {
 					double ej = vnew[j1][k] - vnew[j][k];
-					if (ej < -hp[k]) { vnew[j1][k] += L[k]; hasPeriod = true; }
-					else if (ej > hp[k]) { vnew[j][k] += L[k]; hasPeriod = true; }
+					if (ej < -hp[k]) {
+						vnew[j1][k] += L[k];
+						hasPeriod = true;
+					} else if (ej > hp[k]) {
+						vnew[j][k] += L[k];
+						hasPeriod = true;
+					}
 				}
 			}
 			// Shift the whole triangle back into [0, L]
@@ -1248,9 +1458,13 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 				double cmax = std::max({vnew[0][k], vnew[1][k], vnew[2][k]});
 				double cmin = std::min({vnew[0][k], vnew[1][k], vnew[2][k]});
 				if (cmax > L[k] + 1e-5) {
-					vnew[0][k] -= L[k]; vnew[1][k] -= L[k]; vnew[2][k] -= L[k];
+					vnew[0][k] -= L[k];
+					vnew[1][k] -= L[k];
+					vnew[2][k] -= L[k];
 				} else if (cmin < -1e-5) {
-					vnew[0][k] += L[k]; vnew[1][k] += L[k]; vnew[2][k] += L[k];
+					vnew[0][k] += L[k];
+					vnew[1][k] += L[k];
+					vnew[2][k] += L[k];
 				}
 			}
 
@@ -1274,35 +1488,266 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 		std::vector<VertexHandle> vh;
 		vh.reserve(nv0 + extraV.size());
 		for (std::size_t i = 0; i < nv0; ++i)
-			vh.push_back(this->add_vertex(Vec3d(
-				static_cast<DefaultTriMesh::Scalar>(vpos[i][0]),
-				static_cast<DefaultTriMesh::Scalar>(vpos[i][1]),
-				static_cast<DefaultTriMesh::Scalar>(vpos[i][2]))));
+			vh.push_back(this->add_vertex(Vec3d(static_cast<DefaultTriMesh::Scalar>(vpos[i][0]),
+												static_cast<DefaultTriMesh::Scalar>(vpos[i][1]),
+												static_cast<DefaultTriMesh::Scalar>(vpos[i][2]))));
 		for (const auto& ev : extraV)
-			vh.push_back(this->add_vertex(Vec3d(
-				static_cast<DefaultTriMesh::Scalar>(ev[0]),
-				static_cast<DefaultTriMesh::Scalar>(ev[1]),
-				static_cast<DefaultTriMesh::Scalar>(ev[2]))));
+			vh.push_back(this->add_vertex(Vec3d(static_cast<DefaultTriMesh::Scalar>(ev[0]),
+												static_cast<DefaultTriMesh::Scalar>(ev[1]),
+												static_cast<DefaultTriMesh::Scalar>(ev[2]))));
 		for (const auto& f : flist) {
-			auto fh = this->add_face(
-				vh[static_cast<std::size_t>(f.v[0])],
-				vh[static_cast<std::size_t>(f.v[1])],
-				vh[static_cast<std::size_t>(f.v[2])]);
+			auto fh = this->add_face(vh[static_cast<std::size_t>(f.v[0])],
+									 vh[static_cast<std::size_t>(f.v[1])],
+									 vh[static_cast<std::size_t>(f.v[2])]);
 			if (!fh.is_valid())
-				this->add_face(
-					vh[static_cast<std::size_t>(f.v[0])],
-					vh[static_cast<std::size_t>(f.v[2])],
-					vh[static_cast<std::size_t>(f.v[1])]);
+				this->add_face(vh[static_cast<std::size_t>(f.v[0])],
+							   vh[static_cast<std::size_t>(f.v[2])],
+							   vh[static_cast<std::size_t>(f.v[1])]);
 		}
 	}
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// saveUnitCell
+// saveUnitCell / saveSplitUnitCellWithSingularity
 // ──────────────────────────────────────────────────────────────────────────
 
-bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split,
-								   bool splitEdges) const {
+bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPath,
+													   const std::string& singularityPath,
+													   int surgeryType,
+													   bool splitEdges) const {
+	PeriodicTriMesh mesh = *this;
+	std::vector<double> curv = computeSingularityMeasure(mesh, surgeryType);
+
+	mesh.request_vertex_status();
+	mesh.request_edge_status();
+	mesh.request_halfedge_status();
+	mesh.request_face_status();
+	mesh.periodShift();
+
+	const double hp[3] = {static_cast<double>(mesh.halfPeriod_[0]),
+						  static_cast<double>(mesh.halfPeriod_[1]),
+						  static_cast<double>(mesh.halfPeriod_[2])};
+	const double L[3] = {2.0 * hp[0], 2.0 * hp[1], 2.0 * hp[2]};
+
+	using VertexHandle = PeriodicTriMesh::VertexHandle;
+	using EdgeHandle = PeriodicTriMesh::EdgeHandle;
+	using HalfedgeHandle = PeriodicTriMesh::HalfedgeHandle;
+	using Vec3d = PeriodicTriMesh::Vec3d;
+
+	if (splitEdges) {
+		for (int axis = 0; axis < 3; ++axis) {
+			std::vector<EdgeHandle> toSplit;
+			for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it) {
+				if (mesh.status(*e_it).deleted())
+					continue;
+				HalfedgeHandle he = mesh.halfedge_handle(*e_it, 0);
+				Vec3d p0 = mesh.point(mesh.from_vertex_handle(he));
+				Vec3d p1 = p0 + mesh.wrapVector(mesh.point(mesh.to_vertex_handle(he)) - p0);
+
+				const double a0 = static_cast<double>(p0[axis]);
+				const double a1 = static_cast<double>(p1[axis]);
+
+				if (std::abs(a0) < 1e-5 || std::abs(a0 - L[axis]) < 1e-5)
+					continue;
+				if (std::abs(a1) < 1e-5 || std::abs(a1 - L[axis]) < 1e-5)
+					continue;
+				if (a1 < -1e-5 || a1 > L[axis] + 1e-5)
+					toSplit.push_back(*e_it);
+			}
+
+			for (const EdgeHandle& eh : toSplit) {
+				if (!eh.is_valid() || mesh.status(eh).deleted())
+					continue;
+				HalfedgeHandle he = mesh.halfedge_handle(eh, 0);
+				VertexHandle vFrom = mesh.from_vertex_handle(he);
+				VertexHandle vTo = mesh.to_vertex_handle(he);
+				Vec3d p0 = mesh.point(vFrom);
+				Vec3d p1 = p0 + mesh.wrapVector(mesh.point(vTo) - p0);
+				const double a0 = static_cast<double>(p0[axis]);
+				const double a1 = static_cast<double>(p1[axis]);
+				const double cut = (a1 > L[axis]) ? L[axis] : 0.0;
+				const double denom = a1 - a0;
+				if (std::abs(denom) < 1e-15)
+					continue;
+				const double t = (cut - a0) / denom;
+				if (t <= 1e-6) {
+					auto pp = mesh.point(vFrom);
+					pp[axis] = static_cast<DefaultTriMesh::Scalar>(cut);
+					mesh.set_point(vFrom, pp);
+				} else if (t >= 1.0 - 1e-6) {
+					auto pp = mesh.point(vTo);
+					pp[axis] = static_cast<DefaultTriMesh::Scalar>(cut);
+					mesh.set_point(vTo, pp);
+				} else {
+					Vec3d c;
+					for (int k = 0; k < 3; ++k) {
+						c[k] = static_cast<DefaultTriMesh::Scalar>((1.0 - t) *
+																	   static_cast<double>(p0[k]) +
+																   t * static_cast<double>(p1[k]));
+					}
+					const int nvBefore = static_cast<int>(mesh.n_vertices());
+					mesh.split(eh, c);
+					if (static_cast<int>(mesh.n_vertices()) == nvBefore + 1) {
+						const double cv = (1.0 - t) * curv[static_cast<std::size_t>(vFrom.idx())] +
+										  t * curv[static_cast<std::size_t>(vTo.idx())];
+						curv.push_back(cv);
+					}
+				}
+			}
+			mesh.periodShift();
+		}
+		mesh.garbage_collection();
+	}
+
+	const std::size_t nv0 = mesh.n_vertices();
+	if (curv.size() != nv0) {
+		std::cerr << "[saveSplitUnitCellWithSingularity] curvature size mismatch after edge split: "
+				  << curv.size() << " vs nv=" << nv0 << "\n";
+		return false;
+	}
+
+	std::vector<std::array<double, 3>> vpos(nv0);
+	for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
+		const Vec3d& p = mesh.point(*v_it);
+		vpos[static_cast<std::size_t>((*v_it).idx())] = {
+			static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2])};
+	}
+	struct F3 {
+		int v[3];
+	};
+	std::vector<F3> flist;
+	flist.reserve(mesh.n_faces());
+	for (auto f_it = mesh.faces_begin(); f_it != mesh.faces_end(); ++f_it) {
+		auto fv = mesh.cfv_iter(*f_it);
+		const int a = (*fv).idx();
+		++fv;
+		const int b = (*fv).idx();
+		++fv;
+		const int c = (*fv).idx();
+		flist.push_back({a, b, c});
+	}
+
+	std::map<std::array<int, 3>, int> posMap;
+	auto quantize = [](double x, double y, double z) -> std::array<int, 3> {
+		return {static_cast<int>(std::round(x * 1e5)),
+				static_cast<int>(std::round(y * 1e5)),
+				static_cast<int>(std::round(z * 1e5))};
+	};
+	for (std::size_t i = 0; i < nv0; ++i) {
+		posMap[quantize(vpos[i][0], vpos[i][1], vpos[i][2])] = static_cast<int>(i);
+	}
+
+	std::vector<std::array<double, 3>> extraV;
+	std::vector<double> extraCurv;
+
+	for (auto& f : flist) {
+		double vnew[3][3];
+		for (int j = 0; j < 3; ++j) {
+			for (int k = 0; k < 3; ++k) {
+				vnew[j][k] = vpos[static_cast<std::size_t>(f.v[j])][static_cast<std::size_t>(k)];
+			}
+		}
+
+		bool hasPeriod = false;
+		for (int j = 0; j < 3; ++j) {
+			const int j1 = (j + 1) % 3;
+			for (int k = 0; k < 3; ++k) {
+				const double ej = vnew[j1][k] - vnew[j][k];
+				if (ej < -hp[k]) {
+					vnew[j1][k] += L[k];
+					hasPeriod = true;
+				} else if (ej > hp[k]) {
+					vnew[j][k] += L[k];
+					hasPeriod = true;
+				}
+			}
+		}
+		for (int k = 0; k < 3; ++k) {
+			const double cmax = std::max({vnew[0][k], vnew[1][k], vnew[2][k]});
+			const double cmin = std::min({vnew[0][k], vnew[1][k], vnew[2][k]});
+			if (cmax > L[k] + 1e-5) {
+				vnew[0][k] -= L[k];
+				vnew[1][k] -= L[k];
+				vnew[2][k] -= L[k];
+			} else if (cmin < -1e-5) {
+				vnew[0][k] += L[k];
+				vnew[1][k] += L[k];
+				vnew[2][k] += L[k];
+			}
+		}
+
+		if (hasPeriod) {
+			for (int j = 0; j < 3; ++j) {
+				const int srcIdx = f.v[j];
+				const double srcCurv = curv[static_cast<std::size_t>(srcIdx)];
+				const auto qk = quantize(vnew[j][0], vnew[j][1], vnew[j][2]);
+				if (posMap.count(qk)) {
+					f.v[j] = posMap[qk];
+				} else {
+					const int newIdx = static_cast<int>(nv0 + extraV.size());
+					posMap[qk] = newIdx;
+					extraV.push_back({vnew[j][0], vnew[j][1], vnew[j][2]});
+					extraCurv.push_back(srcCurv);
+					f.v[j] = newIdx;
+				}
+			}
+		}
+	}
+
+	std::vector<double> curvOut = curv;
+	curvOut.insert(curvOut.end(), extraCurv.begin(), extraCurv.end());
+
+	mesh.clear();
+	std::vector<VertexHandle> vh;
+	vh.reserve(nv0 + extraV.size());
+	for (std::size_t i = 0; i < nv0; ++i) {
+		vh.push_back(mesh.add_vertex(Vec3d(static_cast<DefaultTriMesh::Scalar>(vpos[i][0]),
+										   static_cast<DefaultTriMesh::Scalar>(vpos[i][1]),
+										   static_cast<DefaultTriMesh::Scalar>(vpos[i][2]))));
+	}
+	for (const auto& ev : extraV) {
+		vh.push_back(mesh.add_vertex(Vec3d(static_cast<DefaultTriMesh::Scalar>(ev[0]),
+										   static_cast<DefaultTriMesh::Scalar>(ev[1]),
+										   static_cast<DefaultTriMesh::Scalar>(ev[2]))));
+	}
+	for (const auto& f : flist) {
+		auto fh = mesh.add_face(vh[static_cast<std::size_t>(f.v[0])],
+								vh[static_cast<std::size_t>(f.v[1])],
+								vh[static_cast<std::size_t>(f.v[2])]);
+		if (!fh.is_valid()) {
+			mesh.add_face(vh[static_cast<std::size_t>(f.v[0])],
+						  vh[static_cast<std::size_t>(f.v[2])],
+						  vh[static_cast<std::size_t>(f.v[1])]);
+		}
+	}
+
+	if (curvOut.size() != mesh.n_vertices()) {
+		std::cerr << "[saveSplitUnitCellWithSingularity] curvature size mismatch after dup: "
+				  << curvOut.size() << " vs nv=" << mesh.n_vertices() << "\n";
+		return false;
+	}
+
+	if (!OpenMesh::IO::write_mesh(mesh, objPath)) {
+		std::cerr << "[saveSplitUnitCellWithSingularity] failed to write " << objPath << "\n";
+		return false;
+	}
+
+	std::ofstream out(singularityPath);
+	if (!out) {
+		std::cerr << "[saveSplitUnitCellWithSingularity] failed to write " << singularityPath
+				  << "\n";
+		return false;
+	}
+	out << std::setprecision(17);
+	for (double v : curvOut) {
+		out << v << "\n";
+	}
+	std::cerr << "[saveSplitUnitCellWithSingularity] wrote " << objPath << " and "
+			  << singularityPath << " (nv=" << mesh.n_vertices() << ")\n";
+	return true;
+}
+
+bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split, bool splitEdges) const {
 	if (split) {
 		// Copy the mesh, then write out directly after splitUnitCell
 		PeriodicTriMesh copy = *this;
@@ -1310,7 +1755,8 @@ bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split,
 		return OpenMesh::IO::write_mesh(copy, filename);
 	}
 	// No split: write out directly after periodShift
-	// All vertices are within the [0, L) domain; periodic-crossing faces keep their original connectivity
+	// All vertices are within the [0, L) domain; periodic-crossing faces keep their original
+	// connectivity
 	PeriodicTriMesh copy = *this;
 	copy.periodShift();
 	return OpenMesh::IO::write_mesh(copy, filename);
@@ -1326,61 +1772,49 @@ using VertexHandle = PeriodicTriMesh::VertexHandle;
 using HalfedgeHandle = PeriodicTriMesh::HalfedgeHandle;
 
 // ──────────────────────────────────────────────────────────────────────────
-// computeSingularityMeasure
-// Compute per-vertex singularity values from curvature data.
-// surgeryType==1: |H|;  surgeryType==2: max(|kappa_1|, |kappa_2|)
-// (aligned with minsurf compute_singularity_measure)
+// computeSingularityMeasure (surgery uses VertexGeometry::computeSingularityMeasure)
 // ──────────────────────────────────────────────────────────────────────────
-static std::vector<double> computeSingularityMeasure(PeriodicTriMesh& mesh, int surgeryType) {
-	const std::size_t nv = mesh.n_vertices();
-	auto geom = computeVertexGeometry(mesh);
-	std::vector<double> singMeasure(nv, 0.0);
-	for (std::size_t i = 0; i < nv; ++i) {
-		double H = geom.vrings[i].H;
-		double K = geom.vrings[i].K;
-		if (surgeryType == 1) {
-			singMeasure[i] = std::abs(H);
-		} else {
-			double disc = std::abs(H * H - K);
-			double sqrtDisc = std::sqrt(disc);
-			singMeasure[i] = std::max(std::abs(H + sqrtDisc), std::abs(H - sqrtDisc));
-		}
-	}
-	return singMeasure;
-}
 
 // ── cullSmallIslands ──────────────────────────────────────────────────────
 // Remove connected components whose face count < largest * cullRatio.
 // Used after face deletion and after hole filling.
 static void cullSmallIslands(PeriodicTriMesh& mesh, double cullRatio) {
 	const std::size_t nf = mesh.n_faces();
-	if (nf == 0) return;
+	if (nf == 0)
+		return;
 	std::vector<int> compId(nf, -1);
 	std::vector<int> compSize;
 	int curComp = 0;
 	for (std::size_t fi = 0; fi < nf; ++fi) {
-		if (compId[fi] >= 0) continue;
+		if (compId[fi] >= 0)
+			continue;
 		std::queue<int> q;
 		q.push(static_cast<int>(fi));
 		compId[fi] = curComp;
 		int sz = 0;
 		while (!q.empty()) {
-			int fid = q.front(); q.pop(); ++sz;
+			int fid = q.front();
+			q.pop();
+			++sz;
 			auto fh = mesh.face_handle(fid);
 			for (auto fh_it = mesh.cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
 				auto opp = mesh.opposite_halfedge_handle(*fh_it);
-				if (mesh.is_boundary(opp)) continue;
+				if (mesh.is_boundary(opp))
+					continue;
 				int adj = mesh.face_handle(opp).idx();
-				if (adj >= 0 && static_cast<std::size_t>(adj) < nf && compId[static_cast<std::size_t>(adj)] < 0) {
+				if (adj >= 0 && static_cast<std::size_t>(adj) < nf &&
+					compId[static_cast<std::size_t>(adj)] < 0) {
 					compId[static_cast<std::size_t>(adj)] = curComp;
 					q.push(adj);
 				}
 			}
 		}
-		compSize.push_back(sz); ++curComp;
+		compSize.push_back(sz);
+		++curComp;
 	}
 	if (curComp > 1) {
-		int maxComp = static_cast<int>(std::max_element(compSize.begin(), compSize.end()) - compSize.begin());
+		int maxComp =
+			static_cast<int>(std::max_element(compSize.begin(), compSize.end()) - compSize.begin());
 		int threshold = static_cast<int>(compSize[static_cast<std::size_t>(maxComp)] * cullRatio);
 		for (auto f_it = mesh.faces_begin(); f_it != mesh.faces_end(); ++f_it) {
 			int cid = compId[static_cast<std::size_t>((*f_it).idx())];
@@ -1412,12 +1846,14 @@ static void expandSurgeryRegion(PeriodicTriMesh& mesh,
 		q.push(*remaining.begin());
 		remaining.erase(remaining.begin());
 		while (!q.empty()) {
-			int fid = q.front(); q.pop();
+			int fid = q.front();
+			q.pop();
 			comp.insert(fid);
 			auto fh = mesh.face_handle(fid);
 			for (auto fh_it = mesh.cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
 				auto opp = mesh.opposite_halfedge_handle(*fh_it);
-				if (mesh.is_boundary(opp)) continue;
+				if (mesh.is_boundary(opp))
+					continue;
 				int adjF = mesh.face_handle(opp).idx();
 				if (remaining.count(adjF)) {
 					remaining.erase(adjF);
@@ -1452,20 +1888,27 @@ static void expandSurgeryRegion(PeriodicTriMesh& mesh,
 			}
 		}
 
-		// BFS expansion: include an adjacent face if its opposite vertex x value is within [xmin, xmax]
+		// BFS expansion: include an adjacent face if its opposite vertex x value is within [xmin,
+		// xmax]
 		std::set<int> pext;
 		std::queue<int> bfs;
 		std::vector<bool> inBfs(mesh.n_faces(), false);
-		for (int fi : patch) { bfs.push(fi); inBfs[static_cast<std::size_t>(fi)] = true; }
+		for (int fi : patch) {
+			bfs.push(fi);
+			inBfs[static_cast<std::size_t>(fi)] = true;
+		}
 		while (!bfs.empty()) {
-			int fi = bfs.front(); bfs.pop();
+			int fi = bfs.front();
+			bfs.pop();
 			pext.insert(fi);
 			auto fh = mesh.face_handle(fi);
 			for (auto fh_it = mesh.cfh_iter(fh); fh_it.is_valid(); ++fh_it) {
 				auto opp = mesh.opposite_halfedge_handle(*fh_it);
-				if (mesh.is_boundary(opp)) continue;
+				if (mesh.is_boundary(opp))
+					continue;
 				int adjF = mesh.face_handle(opp).idx();
-				if (inBfs[static_cast<std::size_t>(adjF)]) continue;
+				if (inBfs[static_cast<std::size_t>(adjF)])
+					continue;
 				auto vop = mesh.to_vertex_handle(mesh.next_halfedge_handle(opp));
 				if (x[vop.idx()] >= xmin && x[vop.idx()] <= xmax) {
 					bfs.push(adjF);
@@ -1494,26 +1937,40 @@ static void expandSurgeryRegion(PeriodicTriMesh& mesh,
 // select correct patch, bilaplacian fairing.
 // (aligned with minsurf fill_one_hole + localSmoothing)
 // Returns the number of holes successfully processed.
-static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::set<VertexHandle>& /*seedVerts*/) {
+static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPreFairDumpPath) {
 	std::vector<std::vector<HalfedgeHandle>> loops;
 	{
 		std::set<int> visited;
 		for (auto he_it = mesh.halfedges_begin(); he_it != mesh.halfedges_end(); ++he_it) {
-			if (!mesh.is_boundary(*he_it)) continue;
-			if (visited.count((*he_it).idx())) continue;
+			if (!mesh.is_boundary(*he_it))
+				continue;
+			if (visited.count((*he_it).idx()))
+				continue;
 			std::vector<HalfedgeHandle> loop;
 			HalfedgeHandle he = *he_it, start = he;
-			do { loop.push_back(he); visited.insert(he.idx()); he = mesh.next_halfedge_handle(he); }
-			while (he != start && loop.size() < 10000);
-			if (!loop.empty()) loops.push_back(loop);
+			do {
+				loop.push_back(he);
+				visited.insert(he.idx());
+				he = mesh.next_halfedge_handle(he);
+			} while (he != start && loop.size() < 10000);
+			if (!loop.empty())
+				loops.push_back(loop);
 		}
 	}
+
+	struct PatchJob {
+		std::set<int> seedVerts;
+		std::set<int> patchFaceIds;
+		std::map<int, Vec3d> syncedPos;
+	};
+	std::vector<PatchJob> fairJobs;
 
 	int holesProcessed = 0;
 	for (auto& loop : loops) {
 		// Collect seed vertices
 		std::set<int> seedVerts;
-		for (auto he : loop) seedVerts.insert(mesh.from_vertex_handle(he).idx());
+		for (auto he : loop)
+			seedVerts.insert(mesh.from_vertex_handle(he).idx());
 
 		int holeEdgeNum = static_cast<int>(loop.size());
 		(void)holeEdgeNum;
@@ -1525,7 +1982,8 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::set<VertexHandle>&
 			for (int vi : ringVerts)
 				for (auto voh = mesh.cvoh_iter(VertexHandle(vi)); voh.is_valid(); ++voh)
 					toAdd.insert(mesh.to_vertex_handle(*voh).idx());
-			for (int v : toAdd) ringVerts.insert(v);
+			for (int v : toAdd)
+				ringVerts.insert(v);
 		}
 
 		// Extract submesh faces
@@ -1544,12 +2002,14 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::set<VertexHandle>&
 			std::set<int> bfsVisited;
 			bfsVisited.insert(startV);
 			while (!bfs.empty()) {
-				int cur = bfs.front(); bfs.pop();
+				int cur = bfs.front();
+				bfs.pop();
 				for (auto voh = mesh.cvoh_iter(VertexHandle(cur)); voh.is_valid(); ++voh) {
 					int nb = mesh.to_vertex_handle(*voh).idx();
-					if (!ringVerts.count(nb) || bfsVisited.count(nb)) continue;
-					syncedPos[nb] = syncedPos[cur] + mesh.wrapVector(
-						mesh.point(VertexHandle(nb)) - mesh.point(VertexHandle(cur)));
+					if (!ringVerts.count(nb) || bfsVisited.count(nb))
+						continue;
+					syncedPos[nb] = syncedPos[cur] + mesh.wrapVector(mesh.point(VertexHandle(nb)) -
+																	 mesh.point(VertexHandle(cur)));
 					bfsVisited.insert(nb);
 					bfs.push(nb);
 				}
@@ -1564,7 +2024,8 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::set<VertexHandle>&
 
 		for (int vi : ringVerts) {
 			auto it = syncedPos.find(vi);
-			if (it == syncedPos.end()) continue;
+			if (it == syncedPos.end())
+				continue;
 			const Vec3d& p = it->second;
 			auto smv = cmesh.add_vertex(CgalPoint(
 				static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2])));
@@ -1573,8 +2034,13 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::set<VertexHandle>&
 		}
 		for (int fi : ringFaces) {
 			auto fv = mesh.cfv_iter(mesh.face_handle(fi));
-			int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
-			if (!omToSm.count(a) || !omToSm.count(b) || !omToSm.count(c)) continue;
+			int a = (*fv).idx();
+			++fv;
+			int b = (*fv).idx();
+			++fv;
+			int c = (*fv).idx();
+			if (!omToSm.count(a) || !omToSm.count(b) || !omToSm.count(c))
+				continue;
 			cmesh.add_face(omToSm[a], omToSm[b], omToSm[c]);
 		}
 
@@ -1592,29 +2058,46 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::set<VertexHandle>&
 		for (int fillPass = 0; fillPass < 20; ++fillPass) {
 			borderCycles.clear();
 			PMP::extract_boundary_cycles(cmesh, std::back_inserter(borderCycles));
-			if (borderCycles.size() <= 1) break;
+			if (borderCycles.size() <= 1)
+				break;
 
 			int maxCycleLen = 0, maxCycleIdx = 0;
 			for (int bi = 0; bi < static_cast<int>(borderCycles.size()); ++bi) {
-				int cl = 0; auto hh = borderCycles[static_cast<std::size_t>(bi)];
-				do { ++cl; hh = cmesh.next(hh); } while (hh != borderCycles[static_cast<std::size_t>(bi)] && cl < 100000);
-				if (cl > maxCycleLen) { maxCycleLen = cl; maxCycleIdx = bi; }
+				int cl = 0;
+				auto hh = borderCycles[static_cast<std::size_t>(bi)];
+				do {
+					++cl;
+					hh = cmesh.next(hh);
+				} while (hh != borderCycles[static_cast<std::size_t>(bi)] && cl < 100000);
+				if (cl > maxCycleLen) {
+					maxCycleLen = cl;
+					maxCycleIdx = bi;
+				}
 			}
 			int minCycleLen = 100000, minCycleIdx = -1;
 			for (int bi = 0; bi < static_cast<int>(borderCycles.size()); ++bi) {
-				if (bi == maxCycleIdx) continue;
-				int cl = 0; auto hh = borderCycles[static_cast<std::size_t>(bi)];
-				do { ++cl; hh = cmesh.next(hh); } while (hh != borderCycles[static_cast<std::size_t>(bi)] && cl < 100000);
-				if (cl < minCycleLen) { minCycleLen = cl; minCycleIdx = bi; }
+				if (bi == maxCycleIdx)
+					continue;
+				int cl = 0;
+				auto hh = borderCycles[static_cast<std::size_t>(bi)];
+				do {
+					++cl;
+					hh = cmesh.next(hh);
+				} while (hh != borderCycles[static_cast<std::size_t>(bi)] && cl < 100000);
+				if (cl < minCycleLen) {
+					minCycleLen = cl;
+					minCycleIdx = bi;
+				}
 			}
-			if (minCycleIdx < 0) break;
+			if (minCycleIdx < 0)
+				break;
 
 			auto h = borderCycles[static_cast<std::size_t>(minCycleIdx)];
 			std::vector<CGALMesh::Face_index> pf;
 			std::vector<CGALMesh::Vertex_index> pv;
 			try {
-				PMP::triangulate_refine_and_fair_hole(cmesh, h,
-					std::back_inserter(pf), std::back_inserter(pv));
+				PMP::triangulate_refine_and_fair_hole(
+					cmesh, h, std::back_inserter(pf), std::back_inserter(pv));
 				++filledCount;
 			} catch (...) {
 				std::cerr << "[surgery] CGAL fill failed len=" << minCycleLen << "\n";
@@ -1631,117 +2114,175 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::set<VertexHandle>&
 		int addOk = 0, addFail = 0;
 		for (auto fi = cmesh.faces_begin(); fi != cmesh.faces_end(); ++fi) {
 			// Skip original k-ring faces (they already exist in the original mesh)
-			if (static_cast<std::size_t>((*fi).idx()) < origFaceCount) continue;
+			if (static_cast<std::size_t>((*fi).idx()) < origFaceCount)
+				continue;
 
 			auto hverts = cmesh.vertices_around_face(cmesh.halfedge(*fi));
 			std::vector<int> fv;
 			for (auto sv : hverts) {
-				if (static_cast<std::size_t>(sv.idx()) < smToOm.size() && smToOm[static_cast<std::size_t>(sv.idx())] >= 0) {
+				if (static_cast<std::size_t>(sv.idx()) < smToOm.size() &&
+					smToOm[static_cast<std::size_t>(sv.idx())] >= 0) {
 					fv.push_back(smToOm[static_cast<std::size_t>(sv.idx())]);
 				} else {
 					auto p = cmesh.point(sv);
-					VertexHandle newV = mesh.add_vertex(Vec3d(
-						static_cast<DefaultTriMesh::Scalar>(p.x()),
-						static_cast<DefaultTriMesh::Scalar>(p.y()),
-						static_cast<DefaultTriMesh::Scalar>(p.z())));
-					while (smToOm.size() <= static_cast<std::size_t>(sv.idx())) smToOm.push_back(-1);
+					VertexHandle newV =
+						mesh.add_vertex(Vec3d(static_cast<DefaultTriMesh::Scalar>(p.x()),
+											  static_cast<DefaultTriMesh::Scalar>(p.y()),
+											  static_cast<DefaultTriMesh::Scalar>(p.z())));
+					while (smToOm.size() <= static_cast<std::size_t>(sv.idx()))
+						smToOm.push_back(-1);
 					smToOm[static_cast<std::size_t>(sv.idx())] = newV.idx();
 					fv.push_back(newV.idx());
 				}
 			}
 			if (fv.size() == 3) {
-				auto fh = mesh.add_face(VertexHandle(fv[0]), VertexHandle(fv[1]), VertexHandle(fv[2]));
+				auto fh =
+					mesh.add_face(VertexHandle(fv[0]), VertexHandle(fv[1]), VertexHandle(fv[2]));
 				if (!fh.is_valid())
-					fh = mesh.add_face(VertexHandle(fv[0]), VertexHandle(fv[2]), VertexHandle(fv[1]));
-				if (fh.is_valid()) { patchFaceIds.insert(fh.idx()); ++addOk; }
-				else ++addFail;
+					fh = mesh.add_face(
+						VertexHandle(fv[0]), VertexHandle(fv[2]), VertexHandle(fv[1]));
+				if (fh.is_valid()) {
+					patchFaceIds.insert(fh.idx());
+					++addOk;
+				} else
+					++addFail;
 			}
 		}
-		(void)addOk; (void)addFail;
+		(void)addOk;
+		(void)addFail;
+
+		if (!patchFaceIds.empty()) {
+			fairJobs.push_back(
+				{std::move(seedVerts), std::move(patchFaceIds), std::move(syncedPos)});
+		}
+
+		++holesProcessed;
+	}
+
+	if (!postFillPreFairDumpPath.empty()) {
+		mesh.saveUnitCell(postFillPreFairDumpPath);
+		std::cerr << "[surgery] saved post-fill pre-fair mesh: " << postFillPreFairDumpPath << "\n";
+	}
+
+	for (const auto& job : fairJobs) {
+		const auto& seedVerts = job.seedVerts;
+		const auto& patchFaceIds = job.patchFaceIds;
+		const auto& syncedPos = job.syncedPos;
 
 		// localSmoothing: bilaplacian fairing (aligned with minsurf)
-		// Collect patch + neighborhood faces (expand by one layer)
-		if (!patchFaceIds.empty()) {
-			std::set<int> smoothFaces;
-			// First add all faces of seedVerts (aligned with minsurf post_smooth_patch)
-			for (int sv : seedVerts)
-				for (auto vf = mesh.cvf_iter(VertexHandle(sv)); vf.is_valid(); ++vf)
-					smoothFaces.insert((*vf).idx());
-			for (int fi : patchFaceIds)
+		std::set<int> smoothFaces;
+		for (int sv : seedVerts)
+			for (auto vf = mesh.cvf_iter(VertexHandle(sv)); vf.is_valid(); ++vf)
+				smoothFaces.insert((*vf).idx());
+		for (int fi : patchFaceIds)
+			smoothFaces.insert(fi);
+		{
+			std::set<int> toAdd;
+			for (int fi : smoothFaces) {
+				auto fh2 = mesh.face_handle(fi);
+				for (auto fv2 = mesh.cfv_iter(fh2); fv2.is_valid(); ++fv2)
+					for (auto vf2 = mesh.cvf_iter(*fv2); vf2.is_valid(); ++vf2)
+						toAdd.insert((*vf2).idx());
+			}
+			for (int fi : toAdd)
 				smoothFaces.insert(fi);
-			// Expand by one more layer
-			{
-				std::set<int> toAdd;
-				for (int fi : smoothFaces) {
-					auto fh2 = mesh.face_handle(fi);
-					for (auto fv2 = mesh.cfv_iter(fh2); fv2.is_valid(); ++fv2)
-						for (auto vf2 = mesh.cvf_iter(*fv2); vf2.is_valid(); ++vf2)
-							toAdd.insert((*vf2).idx());
-				}
-				for (int fi : toAdd) smoothFaces.insert(fi);
-			}
+		}
 
-			// Extract submesh
-			std::map<int, int> subVMap;
-			std::vector<int> subVInv;
-			for (int fi : smoothFaces) {
-				auto fh2 = mesh.face_handle(fi);
-				for (auto fv2 = mesh.cfv_iter(fh2); fv2.is_valid(); ++fv2) {
-					int vi = (*fv2).idx();
-					if (!subVMap.count(vi)) { subVMap[vi] = static_cast<int>(subVInv.size()); subVInv.push_back(vi); }
+		std::map<int, int> subVMap;
+		std::vector<int> subVInv;
+		for (int fi : smoothFaces) {
+			auto fh2 = mesh.face_handle(fi);
+			for (auto fv2 = mesh.cfv_iter(fh2); fv2.is_valid(); ++fv2) {
+				int vi = (*fv2).idx();
+				if (!subVMap.count(vi)) {
+					subVMap[vi] = static_cast<int>(subVInv.size());
+					subVInv.push_back(vi);
 				}
 			}
-			int snv = static_cast<int>(subVInv.size());
-			Eigen::MatrixX3d subV(snv, 3);
-			// BFS sync
-			std::vector<bool> synced(static_cast<std::size_t>(snv), false);
-			synced[0] = true;
-			{
-				auto sp = syncedPos.count(subVInv[0]) ? syncedPos[subVInv[0]] : mesh.point(VertexHandle(subVInv[0]));
-				subV.row(0) << static_cast<double>(sp[0]), static_cast<double>(sp[1]), static_cast<double>(sp[2]);
+		}
+		int snv = static_cast<int>(subVInv.size());
+		if (snv == 0)
+			continue;
+		Eigen::MatrixX3d subV(snv, 3);
+		std::vector<bool> synced(static_cast<std::size_t>(snv), false);
+		synced[0] = true;
+		{
+			auto sp = syncedPos.count(subVInv[0]) ? syncedPos.at(subVInv[0])
+												  : mesh.point(VertexHandle(subVInv[0]));
+			subV.row(0) << static_cast<double>(sp[0]), static_cast<double>(sp[1]),
+				static_cast<double>(sp[2]);
+		}
+		std::queue<int> syncQ;
+		syncQ.push(0);
+		while (!syncQ.empty()) {
+			int si = syncQ.front();
+			syncQ.pop();
+			int omi = subVInv[static_cast<std::size_t>(si)];
+			for (auto voh = mesh.cvoh_iter(VertexHandle(omi)); voh.is_valid(); ++voh) {
+				int nb = mesh.to_vertex_handle(*voh).idx();
+				if (!subVMap.count(nb))
+					continue;
+				int sn = subVMap[nb];
+				if (synced[static_cast<std::size_t>(sn)])
+					continue;
+				Vec3d w =
+					mesh.wrapVector(mesh.point(VertexHandle(nb)) - mesh.point(VertexHandle(omi)));
+				subV.row(sn) = subV.row(si) + Eigen::RowVector3d(static_cast<double>(w[0]),
+																 static_cast<double>(w[1]),
+																 static_cast<double>(w[2]));
+				synced[static_cast<std::size_t>(sn)] = true;
+				syncQ.push(sn);
 			}
-			std::queue<int> syncQ; syncQ.push(0);
-			while (!syncQ.empty()) {
-				int si = syncQ.front(); syncQ.pop();
-				int omi = subVInv[static_cast<std::size_t>(si)];
-				for (auto voh = mesh.cvoh_iter(VertexHandle(omi)); voh.is_valid(); ++voh) {
-					int nb = mesh.to_vertex_handle(*voh).idx();
-					if (!subVMap.count(nb)) continue;
-					int sn = subVMap[nb];
-					if (synced[static_cast<std::size_t>(sn)]) continue;
-					Vec3d w = mesh.wrapVector(mesh.point(VertexHandle(nb)) - mesh.point(VertexHandle(omi)));
-					subV.row(sn) = subV.row(si) + Eigen::RowVector3d(static_cast<double>(w[0]), static_cast<double>(w[1]), static_cast<double>(w[2]));
-					synced[static_cast<std::size_t>(sn)] = true;
-					syncQ.push(sn);
-				}
-			}
-			Eigen::MatrixX3i subF(static_cast<int>(smoothFaces.size()), 3);
-			int fc = 0;
-			for (int fi : smoothFaces) {
-				auto fh2 = mesh.face_handle(fi);
-				auto fvi = mesh.cfv_iter(fh2);
-				subF(fc, 0) = subVMap[(*fvi).idx()]; ++fvi;
-				subF(fc, 1) = subVMap[(*fvi).idx()]; ++fvi;
-				subF(fc, 2) = subVMap[(*fvi).idx()]; ++fc;
-			}
+		}
+		Eigen::MatrixX3i subF(static_cast<int>(smoothFaces.size()), 3);
+		int fc = 0;
+		for (int fi : smoothFaces) {
+			auto fh2 = mesh.face_handle(fi);
+			auto fvi = mesh.cfv_iter(fh2);
+			subF(fc, 0) = subVMap[(*fvi).idx()];
+			++fvi;
+			subF(fc, 1) = subVMap[(*fvi).idx()];
+			++fvi;
+			subF(fc, 2) = subVMap[(*fvi).idx()];
+			++fc;
+		}
 
-			// Fixed vertices: boundary + neighbors (aligned with minsurf localSmoothing)
-			std::set<int> fixSet;
-			for (int si = 0; si < snv; ++si) {
-				int omi = subVInv[static_cast<std::size_t>(si)];
-				if (mesh.is_boundary(VertexHandle(omi))) {
-					fixSet.insert(si);
-					for (auto voh = mesh.cvoh_iter(VertexHandle(omi)); voh.is_valid(); ++voh) {
-						int nb = mesh.to_vertex_handle(*voh).idx();
-						if (subVMap.count(nb)) fixSet.insert(subVMap[nb]);
-					}
+		// Closed/periodic meshes have no OpenMesh boundary after hole fill.
+		// Fix the submesh collar (rim + 1-ring) so bilaplacian is well-posed.
+		std::set<int> rimSet;
+		for (int si = 0; si < snv; ++si) {
+			int omi = subVInv[static_cast<std::size_t>(si)];
+			if (mesh.is_boundary(VertexHandle(omi)))
+				rimSet.insert(si);
+			for (auto voh = mesh.cvoh_iter(VertexHandle(omi)); voh.is_valid(); ++voh) {
+				if (!subVMap.count(mesh.to_vertex_handle(*voh).idx())) {
+					rimSet.insert(si);
+					break;
 				}
 			}
-			Eigen::VectorXi fixDof(static_cast<int>(fixSet.size()));
-			Eigen::MatrixX3d fixedY(static_cast<int>(fixSet.size()), 3);
-			{ int i = 0; for (int si : fixSet) { fixDof[i] = si; fixedY.row(i) = subV.row(si); ++i; } }
+		}
+		std::set<int> fixSet = rimSet;
+		for (int si : rimSet) {
+			int omi = subVInv[static_cast<std::size_t>(si)];
+			for (auto voh = mesh.cvoh_iter(VertexHandle(omi)); voh.is_valid(); ++voh) {
+				int nb = mesh.to_vertex_handle(*voh).idx();
+				if (subVMap.count(nb))
+					fixSet.insert(subVMap[nb]);
+			}
+		}
+		Eigen::MatrixX3d subVBefore = subV;
+		Eigen::VectorXi fixDof(static_cast<int>(fixSet.size()));
+		Eigen::MatrixX3d fixedY(static_cast<int>(fixSet.size()), 3);
+		{
+			int i = 0;
+			for (int si : fixSet) {
+				fixDof[i] = si;
+				fixedY.row(i) = subV.row(si);
+				++i;
+			}
+		}
 
-			// Bilaplacian fairing x 3
+		if (static_cast<int>(fixSet.size()) < snv && !fixSet.empty()) {
 			for (int fair = 0; fair < 3; ++fair) {
 				Eigen::SparseMatrix<double> L, M;
 				igl::cotmatrix(subV, subF, L);
@@ -1749,32 +2290,31 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::set<VertexHandle>&
 				Eigen::SparseMatrix<double> L2 = (L.transpose() * M.cwiseInverse() * L).eval();
 				Eigen::SparseMatrix<double> Aeq(0, snv);
 				igl::min_quad_with_fixed_data<double> data;
-				if (!igl::min_quad_with_fixed_precompute(L2, fixDof, Aeq, true, data)) break;
+				if (!igl::min_quad_with_fixed_precompute(L2, fixDof, Aeq, true, data))
+					break;
 				Eigen::MatrixXd B = Eigen::MatrixXd::Zero(snv, 3);
 				Eigen::MatrixXd Beq(0, 3);
-				if (!igl::min_quad_with_fixed_solve(data, B, fixedY, Beq, subV)) break;
-				// Check for NaN
+				if (!igl::min_quad_with_fixed_solve(data, B, fixedY, Beq, subV))
+					break;
 				if (subV.hasNaN()) {
-						// Restore original coordinates
-					for (int si = 0; si < snv; ++si) {
-						int omi = subVInv[static_cast<std::size_t>(si)];
-						auto sp = syncedPos.count(omi) ? syncedPos[omi] : mesh.point(VertexHandle(omi));
-						subV.row(si) << static_cast<double>(sp[0]), static_cast<double>(sp[1]), static_cast<double>(sp[2]);
-					}
+					subV = subVBefore;
 					break;
 				}
 			}
-
-			// Write back
-			for (int si = 0; si < snv; ++si) {
-				mesh.set_point(VertexHandle(subVInv[static_cast<std::size_t>(si)]), Vec3d(
-					static_cast<DefaultTriMesh::Scalar>(subV(si, 0)),
-					static_cast<DefaultTriMesh::Scalar>(subV(si, 1)),
-					static_cast<DefaultTriMesh::Scalar>(subV(si, 2))));
-			}
 		}
 
-		++holesProcessed;
+		// Apply chart-space deltas onto original mesh coordinates (never write unwrapped abs
+		// coords).
+		for (int si = 0; si < snv; ++si) {
+			const Eigen::RowVector3d delta = subV.row(si) - subVBefore.row(si);
+			int omi = subVInv[static_cast<std::size_t>(si)];
+			const Vec3d op = mesh.point(VertexHandle(omi));
+			mesh.set_point(
+				VertexHandle(omi),
+				Vec3d(static_cast<DefaultTriMesh::Scalar>(static_cast<double>(op[0]) + delta[0]),
+					  static_cast<DefaultTriMesh::Scalar>(static_cast<double>(op[1]) + delta[1]),
+					  static_cast<DefaultTriMesh::Scalar>(static_cast<double>(op[2]) + delta[2])));
+		}
 	}
 
 	return holesProcessed;
@@ -1799,20 +2339,22 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 
 	double avgH = 0;
 	{
-		double maxH = 0, sumH = 0; int cnt = 0;
+		double maxH = 0, sumH = 0;
+		int cnt = 0;
 		for (std::size_t i = 0; i < nv; ++i) {
-			sumH += singMeasure[i]; ++cnt;
+			sumH += singMeasure[i];
+			++cnt;
 			maxH = std::max(maxH, singMeasure[i]);
 		}
 		avgH = (cnt > 0 ? sumH / cnt : 0);
-		std::cerr << "[surgery] maxH=" << maxH << " avgH=" << avgH
-				  << " tol=" << opts.singularityTol
+		std::cerr << "[surgery] maxH=" << maxH << " avgH=" << avgH << " tol=" << opts.singularityTol
 				  << " ratio=" << opts.singularityRatio << "\n";
 	}
 
-	// ── [2] Mark singular vertices -> collect faces to delete -> partition into connected patches ──
-	// Adaptive threshold: max(singularityTol, singularityRatio * avgH)
-	// Avoids misclassifying normal high-curvature vertices as singular during global wrinkling (when avgH is close to or exceeds tol)
+	// ── [2] Mark singular vertices -> collect faces to delete -> partition into connected patches
+	// ── Adaptive threshold: max(singularityTol, singularityRatio * avgH) Avoids misclassifying
+	// normal high-curvature vertices as singular during global wrinkling (when avgH is close to or
+	// exceeds tol)
 	const double effTol = std::max(opts.singularityTol, opts.singularityRatio * avgH);
 	std::set<int> toDeleteFaceSet;
 	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
@@ -1821,16 +2363,17 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 				toDeleteFaceSet.insert((*vf_it).idx());
 		}
 	}
-	if (toDeleteFaceSet.empty()) return false;
+	if (toDeleteFaceSet.empty())
+		return false;
 
-	// Limit excision area: if the candidate deletion fraction is too high, the high curvature is global wrinkling rather than local necking
+	// Limit excision area: if the candidate deletion fraction is too high, the high curvature is
+	// global wrinkling rather than local necking
 	{
 		const std::size_t nfTotal = this->n_faces();
 		double cutFrac = nfTotal > 0 ? (double)toDeleteFaceSet.size() / nfTotal : 0;
 		if (cutFrac > opts.maxCutAreaFraction) {
-			std::cerr << "[surgery] aborted: cut fraction " << cutFrac
-					  << " > maxCutAreaFraction " << opts.maxCutAreaFraction
-					  << " (likely global wrinkle, not local neck)\n";
+			std::cerr << "[surgery] aborted: cut fraction " << cutFrac << " > maxCutAreaFraction "
+					  << opts.maxCutAreaFraction << " (likely global wrinkle, not local neck)\n";
 			return false;
 		}
 	}
@@ -1844,15 +2387,21 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 	this->garbage_collection();
 	cullSmallIslands(*this, opts.islandCullRatio);
 
-	// ── [5] Fill holes + bilaplacian fairing ──
-	fillSurgeryHoles(*this, {});
+	if (!opts.preFillDumpPath.empty()) {
+		this->saveUnitCell(opts.preFillDumpPath);
+		std::cerr << "[surgery] saved pre-fill mesh: " << opts.preFillDumpPath << "\n";
+	}
+
+	// ── [5] Fill holes (+ optional dump before bilaplacian) then bilaplacian fairing ──
+	fillSurgeryHoles(*this, opts.postFillPreFairDumpPath);
 
 	// ── [6] Remove islands again (aligned with minsurf: deleteisoisland after fill_holes) ──
 	cullSmallIslands(*this, opts.islandCullRatio);
 
 	this->garbage_collection();
-	// Cleanup: patch vertex coordinates from CGAL hole filling are in unwrapped space (may exceed the domain),
-	// shift back to [0, 2*hp) to ensure correct behavior of subsequent classify/mergePeriodBoundary
+	// Cleanup: patch vertex coordinates from CGAL hole filling are in unwrapped space (may exceed
+	// the domain), shift back to [0, 2*hp) to ensure correct behavior of subsequent
+	// classify/mergePeriodBoundary
 	this->periodShift();
 	return true;
 }
@@ -1887,11 +2436,16 @@ void PeriodicTriMesh::periodizeFrom(const DefaultTriMesh& naiveMesh, PeriodizeOp
 	const double Lz = 2.0 * static_cast<double>(halfPeriod_[2]);
 
 	Vec3d fundMin(0.0, 0.0, 0.0);
-	Vec3d fundMax(static_cast<DefaultTriMesh::Scalar>(Lx), static_cast<DefaultTriMesh::Scalar>(Ly),
-		static_cast<DefaultTriMesh::Scalar>(Lz));
+	Vec3d fundMax(static_cast<DefaultTriMesh::Scalar>(Lx),
+				  static_cast<DefaultTriMesh::Scalar>(Ly),
+				  static_cast<DefaultTriMesh::Scalar>(Lz));
 	applyBBoxPadding(fundMin, fundMax, options.bboxPaddingWorld, options.bboxPaddingFraction);
-	options.resolvedBBoxMin = {static_cast<double>(fundMin[0]), static_cast<double>(fundMin[1]), static_cast<double>(fundMin[2])};
-	options.resolvedBBoxMax = {static_cast<double>(fundMax[0]), static_cast<double>(fundMax[1]), static_cast<double>(fundMax[2])};
+	options.resolvedBBoxMin = {static_cast<double>(fundMin[0]),
+							   static_cast<double>(fundMin[1]),
+							   static_cast<double>(fundMin[2])};
+	options.resolvedBBoxMax = {static_cast<double>(fundMax[0]),
+							   static_cast<double>(fundMax[1]),
+							   static_cast<double>(fundMax[2])};
 
 	const int N = std::max(1, options.mcCellsPerAxis);
 	const int nx = N;
@@ -1932,8 +2486,11 @@ void PeriodicTriMesh::periodizeFrom(const DefaultTriMesh& naiveMesh, PeriodizeOp
 	for (int k = 0; k < Np; ++k) {
 		for (int j = 0; j < Np; ++j) {
 			for (int i = 0; i < Np; ++i) {
-				const std::array<double, 3> q = {static_cast<double>(i) * dx, static_cast<double>(j) * dy, static_cast<double>(k) * dz};
-				phi[static_cast<size_t>(nodeIndex(i, j, k, Np))] = signedDistanceAt(q, tree, extVerts, extFaces);
+				const std::array<double, 3> q = {static_cast<double>(i) * dx,
+												 static_cast<double>(j) * dy,
+												 static_cast<double>(k) * dz};
+				phi[static_cast<size_t>(nodeIndex(i, j, k, Np))] =
+					signedDistanceAt(q, tree, extVerts, extFaces);
 			}
 		}
 	}
@@ -1965,7 +2522,8 @@ void PeriodicTriMesh::periodizeFrom(const DefaultTriMesh& naiveMesh, PeriodizeOp
 	}
 	for (int id = 0; id < nNodes; ++id) {
 		const int r = dsu.find(id);
-		phi[static_cast<size_t>(id)] = sumPhi[static_cast<size_t>(r)] / static_cast<double>(cnt[static_cast<size_t>(r)]);
+		phi[static_cast<size_t>(id)] =
+			sumPhi[static_cast<size_t>(r)] / static_cast<double>(cnt[static_cast<size_t>(r)]);
 	}
 
 	std::vector<LevelSetNode> nodes(static_cast<size_t>(nNodes));
@@ -1973,8 +2531,10 @@ void PeriodicTriMesh::periodizeFrom(const DefaultTriMesh& naiveMesh, PeriodizeOp
 		for (int j = 0; j < Np; ++j) {
 			for (int i = 0; i < Np; ++i) {
 				const int id = nodeIndex(i, j, k, Np);
-				nodes[static_cast<size_t>(id)] = {static_cast<double>(i) * dx, static_cast<double>(j) * dy, static_cast<double>(k) * dz,
-					phi[static_cast<size_t>(id)]};
+				nodes[static_cast<size_t>(id)] = {static_cast<double>(i) * dx,
+												  static_cast<double>(j) * dy,
+												  static_cast<double>(k) * dz,
+												  phi[static_cast<size_t>(id)]};
 			}
 		}
 	}
@@ -1995,7 +2555,9 @@ void PeriodicTriMesh::periodizeFrom(const DefaultTriMesh& naiveMesh, PeriodizeOp
 				c[5] = static_cast<std::size_t>(nodeIndex(i + 1, j, k + 1, Np));
 				c[6] = static_cast<std::size_t>(nodeIndex(i + 1, j + 1, k + 1, Np));
 				c[7] = static_cast<std::size_t>(nodeIndex(i, j + 1, k + 1, Np));
-				voxels[{static_cast<std::int32_t>(i), static_cast<std::int32_t>(j), static_cast<std::int32_t>(k)}] = c;
+				voxels[{static_cast<std::int32_t>(i),
+						static_cast<std::int32_t>(j),
+						static_cast<std::int32_t>(k)}] = c;
 			}
 		}
 	}

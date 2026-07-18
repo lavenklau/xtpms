@@ -31,14 +31,14 @@ static Vec3d parseVec3(const std::string& s) {
 	char sep;
 	std::istringstream iss(s);
 	iss >> x >> sep >> y >> sep >> z;
-	return Vec3d(
-		static_cast<xtpms::DefaultTriMesh::Scalar>(x),
-		static_cast<xtpms::DefaultTriMesh::Scalar>(y),
-		static_cast<xtpms::DefaultTriMesh::Scalar>(z));
+	return Vec3d(static_cast<xtpms::DefaultTriMesh::Scalar>(x),
+				 static_cast<xtpms::DefaultTriMesh::Scalar>(y),
+				 static_cast<xtpms::DefaultTriMesh::Scalar>(z));
 }
 
 // CGAL isotropic remesh on OpenMesh (via conversion)
-static void cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeLength, int nIter = 3) {
+static void
+cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeLength, int nIter = 3) {
 	using K = CGAL::Simple_cartesian<double>;
 	using CGALMesh = CGAL::Surface_mesh<K::Point_3>;
 	namespace PMP = CGAL::Polygon_mesh_processing;
@@ -53,19 +53,26 @@ static void cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeL
 	}
 	for (auto f = omesh.faces_begin(); f != omesh.faces_end(); ++f) {
 		auto fv = omesh.cfv_iter(*f);
-		int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+		int a = (*fv).idx();
+		++fv;
+		int b = (*fv).idx();
+		++fv;
+		int c = (*fv).idx();
 		cmesh.add_face(vmap[a], vmap[b], vmap[c]);
 	}
 
 	// Constrain boundary vertex positions + protect boundary edges
 	auto vcmap = cmesh.add_property_map<CGALMesh::Vertex_index, bool>("v:constrained", false).first;
 	for (auto v : cmesh.vertices())
-		if (CGAL::is_border(v, cmesh)) vcmap[v] = true;
+		if (CGAL::is_border(v, cmesh))
+			vcmap[v] = true;
 
-	PMP::isotropic_remeshing(cmesh.faces(), targetEdgeLength, cmesh,
-		CGAL::parameters::number_of_iterations(nIter)
-		.protect_constraints(true)
-		.vertex_is_constrained_map(vcmap));
+	PMP::isotropic_remeshing(cmesh.faces(),
+							 targetEdgeLength,
+							 cmesh,
+							 CGAL::parameters::number_of_iterations(nIter)
+								 .protect_constraints(true)
+								 .vertex_is_constrained_map(vcmap));
 
 	cmesh.collect_garbage();
 
@@ -73,10 +80,10 @@ static void cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeL
 	omesh.clear();
 	for (auto v : cmesh.vertices()) {
 		auto p = cmesh.point(v);
-		omesh.add_vertex(xtpms::DefaultTriMesh::Point(
-			static_cast<xtpms::DefaultTriMesh::Scalar>(p.x()),
-			static_cast<xtpms::DefaultTriMesh::Scalar>(p.y()),
-			static_cast<xtpms::DefaultTriMesh::Scalar>(p.z())));
+		omesh.add_vertex(
+			xtpms::DefaultTriMesh::Point(static_cast<xtpms::DefaultTriMesh::Scalar>(p.x()),
+										 static_cast<xtpms::DefaultTriMesh::Scalar>(p.y()),
+										 static_cast<xtpms::DefaultTriMesh::Scalar>(p.z())));
 	}
 	for (auto f : cmesh.faces()) {
 		std::vector<xtpms::DefaultTriMesh::VertexHandle> fverts;
@@ -85,15 +92,16 @@ static void cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeL
 		if (fverts.size() == 3)
 			omesh.add_face(fverts[0], fverts[1], fverts[2]);
 	}
-	std::cout << "CGAL isotropic remesh: nv=" << omesh.n_vertices()
-			  << " nf=" << omesh.n_faces() << " targetLen=" << targetEdgeLength << "\n";
+	std::cout << "CGAL isotropic remesh: nv=" << omesh.n_vertices() << " nf=" << omesh.n_faces()
+			  << " targetLen=" << targetEdgeLength << "\n";
 }
 
 // Load mesh and periodize.
 // hpStr: "" or "auto" → auto-detect from bbox
 //        "x,y,z"      → scale mesh bbox to match specified half-period
 static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
-							 const std::string& inputFile, const std::string& hpStr) {
+							 const std::string& inputFile,
+							 const std::string& hpStr) {
 	xtpms::DefaultTriMesh src;
 	if (!OpenMesh::IO::read_mesh(src, inputFile)) {
 		std::cerr << "Error: cannot read " << inputFile << "\n";
@@ -104,10 +112,14 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 	{
 		bool hasBnd = false;
 		for (auto e = src.edges_begin(); e != src.edges_end(); ++e)
-			if (src.is_boundary(*e)) { hasBnd = true; break; }
+			if (src.is_boundary(*e)) {
+				hasBnd = true;
+				break;
+			}
 		if (!hasBnd) {
 			// Already closed: read directly, skip remesh/merge/scale
-			// Periodic boundary vertices are already merged; bbox cannot infer the actual period, so --half-period must be specified
+			// Periodic boundary vertices are already merged; bbox cannot infer the actual period,
+			// so --half-period must be specified
 			if (hpStr.empty() || hpStr == "auto") {
 				std::cerr << "Error: closed periodic mesh requires --half-period\n";
 				return false;
@@ -119,7 +131,11 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 				mesh.add_vertex(src.point(*v));
 			for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
 				auto fv = src.cfv_iter(*f);
-				int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+				int a = (*fv).idx();
+				++fv;
+				int b = (*fv).idx();
+				++fv;
+				int c = (*fv).idx();
 				mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
 							  xtpms::PeriodicTriMesh::VertexHandle(b),
 							  xtpms::PeriodicTriMesh::VertexHandle(c));
@@ -139,8 +155,10 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		for (auto v = v0; v != src.vertices_end(); ++v) {
 			const auto& p = src.point(*v);
 			for (int i = 0; i < 3; ++i) {
-				if (p[i] < bmin[i]) bmin[i] = p[i];
-				if (p[i] > bmax[i]) bmax[i] = p[i];
+				if (p[i] < bmin[i])
+					bmin[i] = p[i];
+				if (p[i] > bmax[i])
+					bmax[i] = p[i];
 			}
 		}
 	}
@@ -149,24 +167,29 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 	// Use tight tolerance: only snap vertices that are very close to bbox
 	// (saveUnitCell produces vertices at exact boundary positions)
 	{
-		double tol = 1e-4 * std::min({
-			static_cast<double>(bmax[0] - bmin[0]),
-			static_cast<double>(bmax[1] - bmin[1]),
-			static_cast<double>(bmax[2] - bmin[2])});
+		double tol = 1e-4 * std::min({static_cast<double>(bmax[0] - bmin[0]),
+									  static_cast<double>(bmax[1] - bmin[1]),
+									  static_cast<double>(bmax[2] - bmin[2])});
 		int clamped = 0;
 		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
 			auto p = src.point(*v);
 			bool changed = false;
 			for (int i = 0; i < 3; ++i) {
 				if (std::abs(static_cast<double>(p[i] - bmin[i])) < tol) {
-					p[i] = bmin[i]; changed = true;
+					p[i] = bmin[i];
+					changed = true;
 				} else if (std::abs(static_cast<double>(p[i] - bmax[i])) < tol) {
-					p[i] = bmax[i]; changed = true;
+					p[i] = bmax[i];
+					changed = true;
 				}
 			}
-			if (changed) { src.set_point(*v, p); ++clamped; }
+			if (changed) {
+				src.set_point(*v, p);
+				++clamped;
+			}
 		}
-		if (clamped > 0) std::cout << "Clamped " << clamped << " boundary vertices to bbox\n";
+		if (clamped > 0)
+			std::cout << "Clamped " << clamped << " boundary vertices to bbox\n";
 	}
 
 	// Step 2: Determine target half-period (scale deferred to after merge)
@@ -183,7 +206,8 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 	// Shift src to [bmin, bmax] → [0, bbox_size] (original proportions)
 	for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v) {
 		auto p = src.point(*v);
-		for (int i = 0; i < 3; ++i) p[i] -= bmin[i];
+		for (int i = 0; i < 3; ++i)
+			p[i] -= bmin[i];
 		src.set_point(*v, p);
 	}
 
@@ -197,14 +221,21 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 			mesh.add_vertex(src.point(*v));
 		for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
 			auto fv = src.cfv_iter(*f);
-			int a = (*fv).idx(); ++fv; int b = (*fv).idx(); ++fv; int c = (*fv).idx();
+			int a = (*fv).idx();
+			++fv;
+			int b = (*fv).idx();
+			++fv;
+			int c = (*fv).idx();
 			mesh.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
 						  xtpms::PeriodicTriMesh::VertexHandle(b),
 						  xtpms::PeriodicTriMesh::VertexHandle(c));
 		}
 		bool hasBoundary = false;
 		for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e)
-			if (mesh.is_boundary(*e)) { hasBoundary = true; break; }
+			if (mesh.is_boundary(*e)) {
+				hasBoundary = true;
+				break;
+			}
 		if (hasBoundary) {
 			mesh.mergePeriodBoundary();
 		} else {
@@ -214,17 +245,20 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 
 	// Step 6: Scale from [0, bbox_size] to [0, 2*hp]
 	{
-		Vec3d targetHp = specified ? hp : Vec3d(
-			(bmax[0]-bmin[0])/static_cast<xtpms::DefaultTriMesh::Scalar>(2.0),
-			(bmax[1]-bmin[1])/static_cast<xtpms::DefaultTriMesh::Scalar>(2.0),
-			(bmax[2]-bmin[2])/static_cast<xtpms::DefaultTriMesh::Scalar>(2.0));
+		Vec3d targetHp =
+			specified
+				? hp
+				: Vec3d((bmax[0] - bmin[0]) / static_cast<xtpms::DefaultTriMesh::Scalar>(2.0),
+						(bmax[1] - bmin[1]) / static_cast<xtpms::DefaultTriMesh::Scalar>(2.0),
+						(bmax[2] - bmin[2]) / static_cast<xtpms::DefaultTriMesh::Scalar>(2.0));
 		if (specified) {
 			for (auto v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
 				auto p = mesh.point(*v);
 				for (int i = 0; i < 3; ++i) {
 					double bsize = static_cast<double>(bmax[i] - bmin[i]);
 					double t = (bsize > 1e-15) ? static_cast<double>(p[i]) / bsize : 0.0;
-					p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(t * 2.0 * static_cast<double>(hp[i]));
+					p[i] = static_cast<xtpms::DefaultTriMesh::Scalar>(t * 2.0 *
+																	  static_cast<double>(hp[i]));
 				}
 				mesh.set_point(*v, p);
 			}
@@ -234,8 +268,8 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 	return true;
 }
 
-static void saveMesh(xtpms::PeriodicTriMesh& mesh,
-					 const std::string& outputFile, bool noSplit = false) {
+static void
+saveMesh(xtpms::PeriodicTriMesh& mesh, const std::string& outputFile, bool noSplit = false) {
 	mesh.saveUnitCell(outputFile, !noSplit);
 }
 
@@ -245,68 +279,95 @@ static void saveMesh(xtpms::PeriodicTriMesh& mesh,
 
 struct ExprObjective {
 	std::string expr;
-	double k00=0, k01=0, k02=0, k10=0, k11=0, k12=0, k20=0, k21=0, k22=0;
+	double k00 = 0, k01 = 0, k02 = 0, k10 = 0, k11 = 0, k12 = 0, k20 = 0, k21 = 0, k22 = 0;
 	te_expr* compiled = nullptr;
 
 	bool compile() {
 		te_variable vars[] = {
-			{"k00",&k00}, {"k01",&k01}, {"k02",&k02},
-			{"k10",&k10}, {"k11",&k11}, {"k12",&k12},
-			{"k20",&k20}, {"k21",&k21}, {"k22",&k22},
+			{"k00", &k00},
+			{"k01", &k01},
+			{"k02", &k02},
+			{"k10", &k10},
+			{"k11", &k11},
+			{"k12", &k12},
+			{"k20", &k20},
+			{"k21", &k21},
+			{"k22", &k22},
 		};
 		int err = 0;
 		compiled = te_compile(expr.c_str(), vars, 9, &err);
 		if (!compiled) {
-			std::cerr << "Error: cannot parse expression '" << expr
-					  << "' at position " << err << "\n";
+			std::cerr << "Error: cannot parse expression '" << expr << "' at position " << err
+					  << "\n";
 			return false;
 		}
 		return true;
 	}
 
 	void setKA(const Eigen::Matrix3d& kA) {
-		k00=kA(0,0); k01=kA(0,1); k02=kA(0,2);
-		k10=kA(1,0); k11=kA(1,1); k12=kA(1,2);
-		k20=kA(2,0); k21=kA(2,1); k22=kA(2,2);
+		k00 = kA(0, 0);
+		k01 = kA(0, 1);
+		k02 = kA(0, 2);
+		k10 = kA(1, 0);
+		k11 = kA(1, 1);
+		k12 = kA(1, 2);
+		k20 = kA(2, 0);
+		k21 = kA(2, 1);
+		k22 = kA(2, 2);
 	}
 
 	double eval() { return te_eval(compiled); }
 
 	// Numerical gradient w.r.t. Voigt kA components
-	Eigen::Vector<double,6> gradient(const Eigen::Matrix3d& kA) {
+	Eigen::Vector<double, 6> gradient(const Eigen::Matrix3d& kA) {
 		const double eps = 1e-7;
-		Eigen::Vector<double,6> grad;
+		Eigen::Vector<double, 6> grad;
 		for (int i = 0; i < 3; ++i) {
-			Eigen::Matrix3d kp=kA, km=kA;
-			kp(i,i)+=eps; km(i,i)-=eps;
-			setKA(kp); double fp=eval(); setKA(km); double fm=eval();
-			grad[i] = (fp-fm)/(2*eps);
+			Eigen::Matrix3d kp = kA, km = kA;
+			kp(i, i) += eps;
+			km(i, i) -= eps;
+			setKA(kp);
+			double fp = eval();
+			setKA(km);
+			double fm = eval();
+			grad[i] = (fp - fm) / (2 * eps);
 		}
-		int vm[][2] = {{1,2},{0,2},{0,1}};
+		int vm[][2] = {{1, 2}, {0, 2}, {0, 1}};
 		for (int vi = 0; vi < 3; ++vi) {
-			int r=vm[vi][0], c=vm[vi][1];
-			Eigen::Matrix3d kp=kA, km=kA;
-			kp(r,c)+=eps; kp(c,r)+=eps; km(r,c)-=eps; km(c,r)-=eps;
-			setKA(kp); double fp=eval(); setKA(km); double fm=eval();
-			grad[3+vi] = (fp-fm)/(2*eps);
+			int r = vm[vi][0], c = vm[vi][1];
+			Eigen::Matrix3d kp = kA, km = kA;
+			kp(r, c) += eps;
+			kp(c, r) += eps;
+			km(r, c) -= eps;
+			km(c, r) -= eps;
+			setKA(kp);
+			double fp = eval();
+			setKA(km);
+			double fm = eval();
+			grad[3 + vi] = (fp - fm) / (2 * eps);
 		}
 		setKA(kA);
 		return grad;
 	}
 
-	~ExprObjective() { if (compiled) te_free(compiled); }
+	~ExprObjective() {
+		if (compiled)
+			te_free(compiled);
+	}
 };
 
 // ──────────────────────────────────────────────────────────
 // Subcommand: periodize
 // ──────────────────────────────────────────────────────────
 
-int cmdPeriodize(const std::string& input, const std::string& output,
-				 const std::string& hpStr, bool noSplit) {
+int cmdPeriodize(const std::string& input,
+				 const std::string& output,
+				 const std::string& hpStr,
+				 bool noSplit) {
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
-	std::cout << "Periodized: nv=" << mesh.n_vertices()
-			  << " nf=" << mesh.n_faces() << "\n";
+	if (!loadPeriodicMesh(mesh, input, hpStr))
+		return 1;
+	std::cout << "Periodized: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 	saveMesh(mesh, output, noSplit);
 	std::cout << "Saved: " << output << "\n";
 	return 0;
@@ -318,14 +379,14 @@ int cmdPeriodize(const std::string& input, const std::string& output,
 
 int cmdCompute(const std::string& input, const std::string& hpStr) {
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
+	if (!loadPeriodicMesh(mesh, input, hpStr))
+		return 1;
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
 	int nv = static_cast<int>(mesh.n_vertices());
 	int nf = static_cast<int>(mesh.n_faces());
-	std::cout << "nv=" << nv << " nf=" << nf
-			  << " As=" << geom.vertexAreas.sum() << "\n";
+	std::cout << "nv=" << nv << " nf=" << nf << " As=" << geom.vertexAreas.sum() << "\n";
 	// Euler characteristic: χ = V - E + F
 	int ne = static_cast<int>(mesh.n_edges());
 	int chi = nv - ne + nf;
@@ -342,19 +403,30 @@ int cmdCompute(const std::string& input, const std::string& hpStr) {
 // Subcommand: optimize
 // ──────────────────────────────────────────────────────────
 
-int cmdOptimize(const std::string& input, const std::string& output,
-				const std::string& hpStr, const std::string& objective,
-				int maxIter, double maxStep, double mcfWeight,
-				double precondStrength, double adaptiveEps,
-				bool enableSurgery, int surgeryStart, int surgeryInterval,
-				double surgeryTol, int nfLimit, double convergeTol,
-				bool noSplit, const std::string& outputDir) {
+int cmdOptimize(const std::string& input,
+				const std::string& output,
+				const std::string& hpStr,
+				const std::string& objective,
+				int maxIter,
+				double maxStep,
+				double mcfWeight,
+				double precondStrength,
+				double adaptiveEps,
+				bool enableSurgery,
+				int surgeryStart,
+				int surgeryInterval,
+				double surgeryTol,
+				int nfLimit,
+				double convergeTol,
+				bool noSplit,
+				const std::string& outputDir) {
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, hpStr)) return 1;
+	if (!loadPeriodicMesh(mesh, input, hpStr))
+		return 1;
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 
-	bool isBuiltin = (objective == "apac" || objective == "k00" ||
-					  objective == "k11" || objective == "k22" || objective == "iso");
+	bool isBuiltin = (objective == "apac" || objective == "k00" || objective == "k11" ||
+					  objective == "k22" || objective == "iso");
 
 	if (isBuiltin) {
 		xtpms::TailorADCOptions opts;
@@ -373,13 +445,15 @@ int cmdOptimize(const std::string& input, const std::string& output,
 		opts.surgeryOpts.singularityTol = surgeryTol;
 		opts.surgeryOpts.surgeryType = 2;
 		opts.outputDir = outputDir;
-		if (!outputDir.empty()) opts.saveInterval = 1;
+		if (!outputDir.empty())
+			opts.saveInterval = 1;
 		xtpms::tailorADC(mesh, opts);
 	} else {
 		// Custom expression objective
 		ExprObjective exprObj;
 		exprObj.expr = objective;
-		if (!exprObj.compile()) return 1;
+		if (!exprObj.compile())
+			return 1;
 		std::cout << "Custom objective: " << objective << "\n";
 
 		xtpms::RemeshOptions remeshOpts;
@@ -390,8 +464,10 @@ int cmdOptimize(const std::string& input, const std::string& output,
 				xtpms::delaunayRemesh(mesh, remeshOpts);
 				bool hasBnd = false;
 				for (auto e = mesh.edges_begin(); e != mesh.edges_end() && !hasBnd; ++e)
-					if (mesh.is_boundary(*e)) hasBnd = true;
-				if (hasBnd) mesh.mergePeriodBoundary();
+					if (mesh.is_boundary(*e))
+						hasBnd = true;
+				if (hasBnd)
+					mesh.mergePeriodBoundary();
 			}
 
 			auto geom = xtpms::computeVertexGeometry(mesh);
@@ -405,35 +481,44 @@ int cmdOptimize(const std::string& input, const std::string& output,
 			double As = geom.vertexAreas.sum();
 			for (int i = 0; i < nv; ++i) {
 				double ai = geom.vertexAreas[i];
-				if (ai > 1e-15) { sens.vSens.row(i) /= ai; sens.aSens[i] /= ai; }
+				if (ai > 1e-15) {
+					sens.vSens.row(i) /= ai;
+					sens.aSens[i] /= ai;
+				}
 			}
-			auto kAv = xtpms::toVoigt(kA); kAv.tail<3>() /= 2.0;
+			auto kAv = xtpms::toVoigt(kA);
+			kAv.tail<3>() /= 2.0;
 			auto grad6 = exprObj.gradient(kA);
-			Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-grad6);
+			Eigen::VectorXd dfdvn =
+				(sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-grad6);
 
 			auto L = xtpms::assembleLaplacian(mesh, geom.cotWeights);
 			Eigen::SparseMatrix<double> G = -precondStrength * L;
-			for (int i = 0; i < nv; ++i) G.coeffRef(i,i) += geom.vertexAreas[i];
+			for (int i = 0; i < nv; ++i)
+				G.coeffRef(i, i) += geom.vertexAreas[i];
 			Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(G);
 			Eigen::VectorXd dn = -solver.solve(
-				geom.vertexAreas.cwiseProduct((precondStrength+1.0) * dfdvn).eval());
+				geom.vertexAreas.cwiseProduct((precondStrength + 1.0) * dfdvn).eval());
 
 			for (auto v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
 				int vi = (*v).idx();
-				Eigen::Vector3d disp = dn[vi] * Eigen::Vector3d(
-					geom.vertexNormals[vi][0], geom.vertexNormals[vi][1], geom.vertexNormals[vi][2]);
+				Eigen::Vector3d disp = dn[vi] * Eigen::Vector3d(geom.vertexNormals[vi][0],
+																geom.vertexNormals[vi][1],
+																geom.vertexNormals[vi][2]);
 				if (mcfWeight > 0)
-					disp += mcfWeight * Eigen::Vector3d(
-						geom.vrings[vi].Lx[0], geom.vrings[vi].Lx[1], geom.vrings[vi].Lx[2]);
+					disp += mcfWeight * Eigen::Vector3d(geom.vrings[vi].Lx[0],
+														geom.vrings[vi].Lx[1],
+														geom.vrings[vi].Lx[2]);
 				auto p = mesh.point(*v);
-				mesh.set_point(*v, Vec3d(
-					p[0]+static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep*disp[0]),
-					p[1]+static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep*disp[1]),
-					p[2]+static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep*disp[2])));
+				mesh.set_point(
+					*v,
+					Vec3d(p[0] + static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep * disp[0]),
+						  p[1] + static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep * disp[1]),
+						  p[2] + static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep * disp[2])));
 			}
 
-			std::cout << "iter=" << iter << " obj=" << objVal
-					  << " nv=" << nv << " nf=" << mesh.n_faces() << "\n";
+			std::cout << "iter=" << iter << " obj=" << objVal << " nv=" << nv
+					  << " nf=" << mesh.n_faces() << "\n";
 
 			if (!outputDir.empty())
 				mesh.saveUnitCell(outputDir + "/iter_" + std::to_string(iter) + ".obj");
@@ -454,53 +539,63 @@ int cmdOptimize(const std::string& input, const std::string& output,
 // Marching cubes helper
 // ──────────────────────────────────────────────────────────
 
-static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
-	const std::function<double(double,double,double)>& levelSet,
-	const Vec3d& hp, int resolution) {
-	double Lx=2.0*hp[0], Ly=2.0*hp[1], Lz=2.0*hp[2];
-	int nx=resolution, ny=resolution, nz=resolution;
-	double dx=Lx/nx, dy=Ly/ny, dz=Lz/nz;
+static xtpms::DefaultTriMesh
+marchingCubesFromLevelSet(const std::function<double(double, double, double)>& levelSet,
+						  const Vec3d& hp,
+						  int resolution) {
+	double Lx = 2.0 * hp[0], Ly = 2.0 * hp[1], Lz = 2.0 * hp[2];
+	int nx = resolution, ny = resolution, nz = resolution;
+	double dx = Lx / nx, dy = Ly / ny, dz = Lz / nz;
 	// Periodic MC: nx^3 base nodes + boundary phantom nodes
-	// Phantom node function values = values of the corresponding base node on the opposite side; coordinates = actual positions
-	// This ensures boundary cells and opposite-side cells use the same function values, so MC triangulation matches exactly
+	// Phantom node function values = values of the corresponding base node on the opposite side;
+	// coordinates = actual positions This ensures boundary cells and opposite-side cells use the
+	// same function values, so MC triangulation matches exactly
 	int Np = nx; // number of base nodes
 	auto baseIdx = [Np](int i, int j, int k) {
-		return ((i%Np+Np)%Np) + Np * (((j%Np+Np)%Np) + Np * ((k%Np+Np)%Np));
+		return ((i % Np + Np) % Np) + Np * (((j % Np + Np) % Np) + Np * ((k % Np + Np) % Np));
 	};
-	// Base nodes (perturb to avoid the implicit function being exactly zero at grid points, which causes MC degeneration)
+	// Base nodes (perturb to avoid the implicit function being exactly zero at grid points, which
+	// causes MC degeneration)
 	const double perturbEps = 1e-6 * std::min({dx, dy, dz});
-	std::vector<xtpms::LevelSetNode> nodes(static_cast<std::size_t>(Np*Np*Np));
-	for (int k=0; k<nz; ++k)
-		for (int j=0; j<ny; ++j)
-			for (int i=0; i<nx; ++i) {
-				double val = levelSet(i*dx, j*dy, k*dz);
-				if (std::abs(val) < perturbEps) val = perturbEps;
-				nodes[static_cast<std::size_t>(baseIdx(i,j,k))] =
-					{i*dx, j*dy, k*dz, val};
+	std::vector<xtpms::LevelSetNode> nodes(static_cast<std::size_t>(Np * Np * Np));
+	for (int k = 0; k < nz; ++k)
+		for (int j = 0; j < ny; ++j)
+			for (int i = 0; i < nx; ++i) {
+				double val = levelSet(i * dx, j * dy, k * dz);
+				if (std::abs(val) < perturbEps)
+					val = perturbEps;
+				nodes[static_cast<std::size_t>(baseIdx(i, j, k))] = {i * dx, j * dy, k * dz, val};
 			}
-	// Create phantom nodes for boundary cells (coordinates in [L, L+dx], function values = opposite side)
-	std::map<std::tuple<int,int,int>, int> phantomMap;
+	// Create phantom nodes for boundary cells (coordinates in [L, L+dx], function values = opposite
+	// side)
+	std::map<std::tuple<int, int, int>, int> phantomMap;
 	auto getNode = [&](int i, int j, int k) -> int {
 		bool phantom = (i >= nx || j >= ny || k >= nz);
-		if (!phantom) return baseIdx(i, j, k);
+		if (!phantom)
+			return baseIdx(i, j, k);
 		auto key = std::make_tuple(i, j, k);
-		if (phantomMap.count(key)) return phantomMap[key];
+		if (phantomMap.count(key))
+			return phantomMap[key];
 		int idx = static_cast<int>(nodes.size());
-		double val = nodes[static_cast<std::size_t>(baseIdx(i,j,k))].value;
-		nodes.push_back({i*dx, j*dy, k*dz, val});
+		double val = nodes[static_cast<std::size_t>(baseIdx(i, j, k))].value;
+		nodes.push_back({i * dx, j * dy, k * dz, val});
 		phantomMap[key] = idx;
 		return idx;
 	};
 	xtpms::SparseVoxelCornerMap voxels;
-	for (int k=0; k<nz; ++k)
-		for (int j=0; j<ny; ++j)
-			for (int i=0; i<nx; ++i) {
+	for (int k = 0; k < nz; ++k)
+		for (int j = 0; j < ny; ++j)
+			for (int i = 0; i < nx; ++i) {
 				xtpms::VoxelCornerNodeIndices c{};
-				c[0]=getNode(i,j,k);       c[1]=getNode(i+1,j,k);
-				c[2]=getNode(i+1,j+1,k);   c[3]=getNode(i,j+1,k);
-				c[4]=getNode(i,j,k+1);     c[5]=getNode(i+1,j,k+1);
-				c[6]=getNode(i+1,j+1,k+1); c[7]=getNode(i,j+1,k+1);
-				voxels[{i,j,k}] = c;
+				c[0] = getNode(i, j, k);
+				c[1] = getNode(i + 1, j, k);
+				c[2] = getNode(i + 1, j + 1, k);
+				c[3] = getNode(i, j + 1, k);
+				c[4] = getNode(i, j, k + 1);
+				c[5] = getNode(i + 1, j, k + 1);
+				c[6] = getNode(i + 1, j + 1, k + 1);
+				c[7] = getNode(i, j + 1, k + 1);
+				voxels[{i, j, k}] = c;
 			}
 	xtpms::DefaultTriMesh src;
 	xtpms::ExtractMarchingCubesOptions mcOpts;
@@ -512,11 +607,9 @@ static xtpms::DefaultTriMesh marchingCubesFromLevelSet(
 static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, const Vec3d& hp) {
 	// MC output periodic boundary vertices match exactly (coincide after translating by one period)
 	// Simply wrap to [0, L) + hash-based deduplication; no projection/split needed
-	const double L[3] = {
-		2.0 * static_cast<double>(hp[0]),
-		2.0 * static_cast<double>(hp[1]),
-		2.0 * static_cast<double>(hp[2])
-	};
+	const double L[3] = {2.0 * static_cast<double>(hp[0]),
+						 2.0 * static_cast<double>(hp[1]),
+						 2.0 * static_cast<double>(hp[2])};
 
 	const std::size_t nv = src.n_vertices();
 	// Wrap vertices to [0, L)
@@ -526,9 +619,12 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 		auto& w = wpos[static_cast<std::size_t>((*v).idx())];
 		for (int i = 0; i < 3; ++i) {
 			double pi = static_cast<double>(p[i]);
-			while (pi < -1e-8) pi += L[i];
-			while (pi >= L[i] - 1e-8) pi -= L[i];
-			if (pi < 0) pi = 0;
+			while (pi < -1e-8)
+				pi += L[i];
+			while (pi >= L[i] - 1e-8)
+				pi -= L[i];
+			if (pi < 0)
+				pi = 0;
 			w[static_cast<std::size_t>(i)] = pi;
 		}
 	}
@@ -537,14 +633,16 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 	const double res = 1e-5; // quantization resolution
 	struct GridKey {
 		int64_t x, y, z;
-		bool operator==(const GridKey& o) const { return x==o.x && y==o.y && z==o.z; }
+		bool operator==(const GridKey& o) const { return x == o.x && y == o.y && z == o.z; }
 	};
 	struct GridHash {
 		std::size_t operator()(const GridKey& k) const {
 			return std::hash<int64_t>()(k.x * 1000003LL + k.y) * 1000003LL + k.z;
 		}
 	};
-	auto quantize = [res](double v) -> int64_t { return static_cast<int64_t>(std::round(v / res)); };
+	auto quantize = [res](double v) -> int64_t {
+		return static_cast<int64_t>(std::round(v / res));
+	};
 
 	std::unordered_map<GridKey, int, GridHash> grid;
 	std::vector<std::array<double, 3>> uniqueVerts;
@@ -568,23 +666,27 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 	mesh.setHalfPeriod(hp);
 	std::vector<xtpms::PeriodicTriMesh::VertexHandle> vh(uniqueVerts.size());
 	for (std::size_t i = 0; i < uniqueVerts.size(); ++i) {
-		vh[i] = mesh.add_vertex(Vec3d(
-			static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][0]),
-			static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][1]),
-			static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][2])));
+		vh[i] =
+			mesh.add_vertex(Vec3d(static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][0]),
+								  static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][1]),
+								  static_cast<xtpms::DefaultTriMesh::Scalar>(uniqueVerts[i][2])));
 	}
 	// Deduplicate faces: after welding, different original faces may map to the same three vertices
-	std::set<std::array<int,3>> faceSet;
+	std::set<std::array<int, 3>> faceSet;
 	for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
 		auto fv = src.cfv_iter(*f);
-		int a = vmap[static_cast<std::size_t>((*fv).idx())]; ++fv;
-		int b = vmap[static_cast<std::size_t>((*fv).idx())]; ++fv;
+		int a = vmap[static_cast<std::size_t>((*fv).idx())];
+		++fv;
+		int b = vmap[static_cast<std::size_t>((*fv).idx())];
+		++fv;
 		int c = vmap[static_cast<std::size_t>((*fv).idx())];
-		if (a == b || b == c || a == c) continue;
+		if (a == b || b == c || a == c)
+			continue;
 		// Canonicalize face (smallest vertex first) for deduplication
-		std::array<int,3> key = {a, b, c};
+		std::array<int, 3> key = {a, b, c};
 		std::sort(key.begin(), key.end());
-		if (!faceSet.insert(key).second) continue; // duplicate face
+		if (!faceSet.insert(key).second)
+			continue; // duplicate face
 		auto fh = mesh.add_face(vh[static_cast<std::size_t>(a)],
 								vh[static_cast<std::size_t>(b)],
 								vh[static_cast<std::size_t>(c)]);
@@ -596,29 +698,30 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 
 	int bnd = 0;
 	for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e)
-		if (mesh.is_boundary(*e)) ++bnd;
-	std::cerr << "[merge] after weld: nv=" << mesh.n_vertices()
-			  << " nf=" << mesh.n_faces() << " bnd=" << bnd << "\n";
+		if (mesh.is_boundary(*e))
+			++bnd;
+	std::cerr << "[merge] after weld: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
+			  << " bnd=" << bnd << "\n";
 	return mesh;
 }
 
 // Built-in level set functions
-static std::function<double(double,double,double)> getBuiltinLevelSet(
-	const std::string& type, double Lx, double Ly, double Lz) {
+static std::function<double(double, double, double)>
+getBuiltinLevelSet(const std::string& type, double Lx, double Ly, double Lz) {
 	if (type == "gyroid") {
-		return [Lx,Ly,Lz](double x, double y, double z) {
-			double px=2*M_PI*x/Lx, py=2*M_PI*y/Ly, pz=2*M_PI*z/Lz;
-			return sin(px)*cos(py) + sin(py)*cos(pz) + sin(pz)*cos(px);
+		return [Lx, Ly, Lz](double x, double y, double z) {
+			double px = 2 * M_PI * x / Lx, py = 2 * M_PI * y / Ly, pz = 2 * M_PI * z / Lz;
+			return sin(px) * cos(py) + sin(py) * cos(pz) + sin(pz) * cos(px);
 		};
 	} else if (type == "schwarzp" || type == "schwarz-p") {
-		return [Lx,Ly,Lz](double x, double y, double z) {
-			return cos(2*M_PI*x/Lx) + cos(2*M_PI*y/Ly) + cos(2*M_PI*z/Lz);
+		return [Lx, Ly, Lz](double x, double y, double z) {
+			return cos(2 * M_PI * x / Lx) + cos(2 * M_PI * y / Ly) + cos(2 * M_PI * z / Lz);
 		};
 	} else if (type == "diamond" || type == "schwarzd" || type == "schwarz-d") {
-		return [Lx,Ly,Lz](double x, double y, double z) {
-			double px=2*M_PI*x/Lx, py=2*M_PI*y/Ly, pz=2*M_PI*z/Lz;
-			return sin(px)*sin(py)*sin(pz) + sin(px)*cos(py)*cos(pz)
-				 + cos(px)*sin(py)*cos(pz) + cos(px)*cos(py)*sin(pz);
+		return [Lx, Ly, Lz](double x, double y, double z) {
+			double px = 2 * M_PI * x / Lx, py = 2 * M_PI * y / Ly, pz = 2 * M_PI * z / Lz;
+			return sin(px) * sin(py) * sin(pz) + sin(px) * cos(py) * cos(pz) +
+				   cos(px) * sin(py) * cos(pz) + cos(px) * cos(py) * sin(pz);
 		};
 	}
 	return nullptr;
@@ -628,13 +731,18 @@ static std::function<double(double,double,double)> getBuiltinLevelSet(
 // Subcommand: sample (extract isosurface from level set)
 // ──────────────────────────────────────────────────────────
 
-int cmdSample(const std::string& expression, const std::string& output,
-			  const std::string& hpStr, int resolution, bool noSplit, bool randomMode,
-			  int kmax, double decay) {
+int cmdSample(const std::string& expression,
+			  const std::string& output,
+			  const std::string& hpStr,
+			  int resolution,
+			  bool noSplit,
+			  bool randomMode,
+			  int kmax,
+			  double decay) {
 	Vec3d hp = parseVec3(hpStr);
-	double Lx=2.0*hp[0], Ly=2.0*hp[1], Lz=2.0*hp[2];
+	double Lx = 2.0 * hp[0], Ly = 2.0 * hp[1], Lz = 2.0 * hp[2];
 
-	std::function<double(double,double,double)> levelSet;
+	std::function<double(double, double, double)> levelSet;
 
 	if (randomMode) {
 		// Random triperiodic Fourier series:
@@ -648,25 +756,29 @@ int cmdSample(const std::string& expression, const std::string& output,
 		std::uniform_real_distribution<double> dist(-1.0, 1.0);
 
 		// Enumerate all frequency vectors and generate coefficients
-		struct FourierTerm { int k[3]; double c, s; };
+		struct FourierTerm {
+			int k[3];
+			double c, s;
+		};
 		std::vector<FourierTerm> terms;
 		for (int k0 = -kmax; k0 <= kmax; ++k0)
 			for (int k1 = -kmax; k1 <= kmax; ++k1)
 				for (int k2 = -kmax; k2 <= kmax; ++k2) {
-					if (k0 == 0 && k1 == 0 && k2 == 0) continue; // skip DC
-					double knorm = std::sqrt(k0*k0 + k1*k1 + k2*k2);
+					if (k0 == 0 && k1 == 0 && k2 == 0)
+						continue; // skip DC
+					double knorm = std::sqrt(k0 * k0 + k1 * k1 + k2 * k2);
 					double weight = 1.0 / std::pow(knorm, decay);
-					terms.push_back({{k0,k1,k2}, dist(gen)*weight, dist(gen)*weight});
+					terms.push_back({{k0, k1, k2}, dist(gen) * weight, dist(gen) * weight});
 				}
 
 		std::cout << "Random Fourier series: " << terms.size() << " terms, kmax=" << kmax
 				  << ", decay=" << decay << "\n";
 
 		levelSet = [=](double x, double y, double z) {
-			double w[3] = {2*M_PI*x/Lx, 2*M_PI*y/Ly, 2*M_PI*z/Lz};
+			double w[3] = {2 * M_PI * x / Lx, 2 * M_PI * y / Ly, 2 * M_PI * z / Lz};
 			double val = 0;
 			for (const auto& t : terms) {
-				double phase = t.k[0]*w[0] + t.k[1]*w[1] + t.k[2]*w[2];
+				double phase = t.k[0] * w[0] + t.k[1] * w[1] + t.k[2] * w[2];
 				val += t.c * cos(phase) + t.s * sin(phase);
 			}
 			return val;
@@ -678,25 +790,30 @@ int cmdSample(const std::string& expression, const std::string& output,
 			// Parse as tinyexpr expression with variables x, y, z
 			// Expression assumes 2π-periodic: e.g. cos(x)+cos(y)+cos(z)
 			// Auto-scale: x_expr = 2π * x_physical / period
-			double vx=0, vy=0, vz=0;
+			double vx = 0, vy = 0, vz = 0;
 			double pi_val = M_PI;
 			te_variable vars[] = {
-				{"x", &vx}, {"y", &vy}, {"z", &vz}, {"pi", &pi_val},
+				{"x", &vx},
+				{"y", &vy},
+				{"z", &vz},
+				{"pi", &pi_val},
 			};
 			int err = 0;
 			te_expr* compiled = te_compile(expression.c_str(), vars, 4, &err);
 			if (!compiled) {
-				std::cerr << "Error: cannot parse expression '" << expression
-						  << "' at position " << err << "\n";
+				std::cerr << "Error: cannot parse expression '" << expression << "' at position "
+						  << err << "\n";
 				return 1;
 			}
 			levelSet = [compiled, &vx, &vy, &vz, Lx, Ly, Lz](double x, double y, double z) mutable {
 				// Scale physical [0, L] → expression [0, 2π]
-				vx = 2*M_PI*x/Lx; vy = 2*M_PI*y/Ly; vz = 2*M_PI*z/Lz;
+				vx = 2 * M_PI * x / Lx;
+				vy = 2 * M_PI * y / Ly;
+				vz = 2 * M_PI * z / Lz;
 				return te_eval(compiled);
 			};
-			std::cout << "Expression: " << expression
-					  << " (2pi-periodic, scaled to period " << Lx << "x" << Ly << "x" << Lz << ")\n";
+			std::cout << "Expression: " << expression << " (2pi-periodic, scaled to period " << Lx
+					  << "x" << Ly << "x" << Lz << ")\n";
 		}
 	}
 
@@ -715,7 +832,6 @@ int cmdSample(const std::string& expression, const std::string& output,
 	return 0;
 }
 
-
 // ──────────────────────────────────────────────────────────
 // Main
 // ──────────────────────────────────────────────────────────
@@ -724,11 +840,12 @@ int main(int argc, char** argv) {
 	CLI::App app{"xtpms - Computational design of triply periodic minimal surfaces"};
 	app.require_subcommand(1);
 
-	std::string hpStr;  // empty = auto-detect from bbox
+	std::string hpStr; // empty = auto-detect from bbox
 
 	// ── periodize ──
 	auto* cmdP = app.add_subcommand("periodize", "Merge periodic boundary of a mesh");
-	std::string pz_in, pz_out; bool pz_nosplit = false;
+	std::string pz_in, pz_out;
+	bool pz_nosplit = false;
 	cmdP->add_option("-i,--input", pz_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 	cmdP->add_option("-o,--output", pz_out, "Output OBJ")->required();
 	cmdP->add_option("--half-period", hpStr, "Half-period x,y,z");
@@ -743,13 +860,14 @@ int main(int argc, char** argv) {
 	// ── optimize (also aliased as "generate") ──
 	auto* cmdO = app.add_subcommand("optimize", "Optimize surface conductivity");
 	auto* cmdG = app.add_subcommand("generate", "Alias for optimize --objective apac");
-	std::string o_in, o_out, o_obj="apac", o_dir;
-	int o_iter=100; double o_step=1.0, o_mcf=0.1, o_prec=0.1;
-	bool o_nosurg=false, o_nosplit=false;
-	int o_surgStart=-1, o_surgInt=4, o_nfLimit=100000;
-	double o_surgTol=25.0, o_ctol=1e-3, o_aeps=1.0;
-	cmdO->add_option("--objective", o_obj,
-		"apac|k00|k11|k22|iso or expression")->default_val("apac");
+	std::string o_in, o_out, o_obj = "apac", o_dir;
+	int o_iter = 100;
+	double o_step = 1.0, o_mcf = 0.1, o_prec = 0.1;
+	bool o_nosurg = false, o_nosplit = false;
+	int o_surgStart = 0, o_surgInt = 4, o_nfLimit = 100000;
+	double o_surgTol = 25.0, o_ctol = 1e-3, o_aeps = 1.0;
+	cmdO->add_option("--objective", o_obj, "apac|k00|k11|k22|iso or expression")
+		->default_val("apac");
 	for (auto* cmd : {cmdO, cmdG}) {
 		cmd->add_option("-i,--input", o_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 		cmd->add_option("-o,--output", o_out, "Output OBJ")->required();
@@ -760,10 +878,12 @@ int main(int argc, char** argv) {
 		cmd->add_option("--precondition", o_prec)->default_val(0.1);
 		cmd->add_option("--adaptive-eps", o_aeps, "Curvature-adaptive remesh")->default_val(1.0);
 		cmd->add_flag("--no-surgery", o_nosurg, "Disable singularity surgery");
-		cmd->add_option("--surgery-start", o_surgStart, "Surgery start iter (-1=auto)")->default_val(-1);
+		cmd->add_option("--surgery-start", o_surgStart, "First iter eligible for surgery")
+			->default_val(0);
 		cmd->add_option("--surgery-interval", o_surgInt)->default_val(4);
 		cmd->add_option("--surgery-tol", o_surgTol)->default_val(25.0);
-		cmd->add_option("--nf-limit", o_nfLimit, "Max face count before abort")->default_val(100000);
+		cmd->add_option("--nf-limit", o_nfLimit, "Max face count before abort")
+			->default_val(100000);
 		cmd->add_option("--converge-tol", o_ctol)->default_val(1e-3);
 		cmd->add_flag("--no-split", o_nosplit);
 		cmd->add_option("--output-dir", o_dir, "Save intermediate meshes");
@@ -772,47 +892,71 @@ int main(int argc, char** argv) {
 	// ── sample ──
 	auto* cmdS = app.add_subcommand("sample", "Sample isosurface from level set expression");
 	std::string s_expr, s_out, s_hpStr = "1,1,1";
-	int s_res=20; bool s_nosplit=false, s_random=false;
-	int s_kmax=2; double s_decay=2.0;
-	cmdS->add_option("-e,--expression", s_expr,
-		"Level set expression (x,y,z,pi) or built-in: gyroid|schwarzp|diamond");
+	int s_res = 20;
+	bool s_nosplit = false, s_random = false;
+	int s_kmax = 2;
+	double s_decay = 2.0;
+	cmdS->add_option("-e,--expression",
+					 s_expr,
+					 "Level set expression (x,y,z,pi) or built-in: gyroid|schwarzp|diamond");
 	cmdS->add_option("-o,--output", s_out, "Output OBJ")->required();
 	cmdS->add_option("--half-period", s_hpStr, "Half-period x,y,z")->default_val("1,1,1");
 	cmdS->add_option("-r,--resolution", s_res)->default_val(20);
 	cmdS->add_flag("--random", s_random, "Random triperiodic function (ignore -e)");
 	cmdS->add_option("--kmax", s_kmax, "Max frequency index for --random")->default_val(2);
-	cmdS->add_option("--decay", s_decay, "Coefficient decay exponent for --random")->default_val(2.0);
+	cmdS->add_option("--decay", s_decay, "Coefficient decay exponent for --random")
+		->default_val(2.0);
 	cmdS->add_flag("--no-split", s_nosplit);
 
 	// ── conj ──
-	auto* cmdJ = app.add_subcommand("conj", "Compute conjugate surface from minimal surface fundamental domain");
+	auto* cmdJ = app.add_subcommand(
+		"conj", "Compute conjugate surface from minimal surface fundamental domain");
 	std::string cj_in, cj_out;
 	double cj_theta = 90.0;
-	cmdJ->add_option("-i,--input", cj_in, "Input mesh (OBJ, STL, PLY, OFF; fundamental domain)")->required();
+	cmdJ->add_option("-i,--input", cj_in, "Input mesh (OBJ, STL, PLY, OFF; fundamental domain)")
+		->required();
 	cmdJ->add_option("-o,--output", cj_out, "Output OBJ")->default_val("");
-	cmdJ->add_option("--theta", cj_theta, "Bonnet rotation angle (degrees, default 90=pure conjugate)")->default_val(90.0);
+	cmdJ->add_option(
+			"--theta", cj_theta, "Bonnet rotation angle (degrees, default 90=pure conjugate)")
+		->default_val(90.0);
 
 	CLI11_PARSE(app, argc, argv);
 
-	if (cmdP->parsed()) return cmdPeriodize(pz_in, pz_out, hpStr, pz_nosplit);
-	if (cmdC->parsed()) return cmdCompute(cp_in, hpStr);
+	if (cmdP->parsed())
+		return cmdPeriodize(pz_in, pz_out, hpStr, pz_nosplit);
+	if (cmdC->parsed())
+		return cmdCompute(cp_in, hpStr);
 	if (cmdO->parsed() || cmdG->parsed()) {
-		if (cmdG->parsed()) o_obj = "apac";  // generate always uses apac objective
-		int surgStart = (o_surgStart < 0) ? std::min(o_iter / 3, 20) : o_surgStart;
-		return cmdOptimize(o_in, o_out, hpStr, o_obj, o_iter, o_step,
-						   o_mcf, o_prec, o_aeps, !o_nosurg, surgStart,
-						   o_surgInt, o_surgTol, o_nfLimit, o_ctol,
-						   o_nosplit, o_dir);
+		if (cmdG->parsed())
+			o_obj = "apac"; // generate always uses apac objective
+		return cmdOptimize(o_in,
+						   o_out,
+						   hpStr,
+						   o_obj,
+						   o_iter,
+						   o_step,
+						   o_mcf,
+						   o_prec,
+						   o_aeps,
+						   !o_nosurg,
+						   o_surgStart,
+						   o_surgInt,
+						   o_surgTol,
+						   o_nfLimit,
+						   o_ctol,
+						   o_nosplit,
+						   o_dir);
 	}
-	if (cmdS->parsed()) return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random, s_kmax, s_decay);
+	if (cmdS->parsed())
+		return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random, s_kmax, s_decay);
 	if (cmdJ->parsed()) {
 		xtpms::DefaultTriMesh mesh;
 		if (!OpenMesh::IO::read_mesh(mesh, cj_in)) {
 			std::cerr << "Error: cannot read " << cj_in << "\n";
 			return 1;
 		}
-		std::string out = cj_out.empty() ?
-			cj_in.substr(0, cj_in.find_last_of('.')) + ".conj.obj" : cj_out;
+		std::string out =
+			cj_out.empty() ? cj_in.substr(0, cj_in.find_last_of('.')) + ".conj.obj" : cj_out;
 		return xtpms::computeConjugateSurface(mesh, out, cj_theta) ? 0 : 1;
 	}
 	return 0;

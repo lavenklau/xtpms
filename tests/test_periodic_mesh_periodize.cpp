@@ -2469,7 +2469,7 @@ TEST(Surgery, ExternalMeshFromEnv) {
 	std::cout << "before surgery (IDT singularity): maxSing=" << maxSing << " avgSing=" << avgSing
 			  << "\n";
 
-	const fs::path outDir = fs::path("artifacts/surgery/befsur0004");
+	const fs::path outDir = fs::path("artifacts/surgery") / meshPath.stem();
 	fs::create_directories(outDir);
 	const std::string beforePath = (outDir / "before_surgery.obj").string();
 	const std::string holesPath = (outDir / "after_excision_holes.obj").string();
@@ -2492,15 +2492,18 @@ TEST(Surgery, ExternalMeshFromEnv) {
 	std::cout << "surgery: performed=" << performed << " nv=" << mesh.n_vertices()
 			  << " nf=" << mesh.n_faces() << " bnd=" << countBoundaryEdges(mesh) << "\n";
 
-	ASSERT_TRUE(mesh.saveUnitCell(filledPath));
+	ASSERT_TRUE(mesh.saveUnitCell(filledPath, /*split=*/false));
 	std::cout << "saved:\n  " << beforePath << "\n  " << holesPath << "  (with holes, pre-fill)"
 			  << "\n  " << preFairPath << "  (filled, before bilaplacian)"
 			  << "\n  " << filledPath << "  (after bilaplacian fair)\n";
-	EXPECT_GT(mesh.n_faces(), 0u);
 	if (performed) {
+		EXPECT_GT(mesh.n_faces(), 0u);
+		EXPECT_EQ(countBoundaryEdges(mesh), 0) << "surgery should leave a closed mesh";
 		EXPECT_TRUE(fs::exists(holesPath));
 		EXPECT_TRUE(fs::exists(preFairPath));
 		EXPECT_TRUE(fs::exists(filledPath));
+	} else {
+		EXPECT_GT(mesh.n_faces(), 0u);
 	}
 }
 

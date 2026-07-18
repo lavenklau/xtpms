@@ -2053,71 +2053,105 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPr
 		// Record the face count before hole filling
 		std::size_t cmeshFacesBefore = cmesh.number_of_faces();
 
-		// Repeatedly fill holes until only the outer boundary remains
+		// Fill only the CGAL boundary cycle that matches this OM hole (seedVerts).
+		// Do NOT fill the k-ring outer rim or neighboring holes in the same submesh —
+		// those caused complex-edge writeback when capped.
 		int filledCount = 0;
-		for (int fillPass = 0; fillPass < 20; ++fillPass) {
-			borderCycles.clear();
-			PMP::extract_boundary_cycles(cmesh, std::back_inserter(borderCycles));
-			if (borderCycles.size() <= 1)
-				break;
+		int fillFail = 0;
+		std::vector<CGALMesh::Face_index> patchFacesCgal;
 
-			int maxCycleLen = 0, maxCycleIdx = 0;
-			for (int bi = 0; bi < static_cast<int>(borderCycles.size()); ++bi) {
-				int cl = 0;
-				auto hh = borderCycles[static_cast<std::size_t>(bi)];
-				do {
-					++cl;
-					hh = cmesh.next(hh);
-				} while (hh != borderCycles[static_cast<std::size_t>(bi)] && cl < 100000);
-				if (cl > maxCycleLen) {
-					maxCycleLen = cl;
-					maxCycleIdx = bi;
-				}
-			}
-			int minCycleLen = 100000, minCycleIdx = -1;
-			for (int bi = 0; bi < static_cast<int>(borderCycles.size()); ++bi) {
-				if (bi == maxCycleIdx)
-					continue;
-				int cl = 0;
-				auto hh = borderCycles[static_cast<std::size_t>(bi)];
-				do {
-					++cl;
-					hh = cmesh.next(hh);
-				} while (hh != borderCycles[static_cast<std::size_t>(bi)] && cl < 100000);
-				if (cl < minCycleLen) {
-					minCycleLen = cl;
-					minCycleIdx = bi;
-				}
-			}
-			if (minCycleIdx < 0)
-				break;
+		auto cycleOnSeed = [&](CGALMesh::Halfedge_index h0, int& outLen) -> int {
+			int onSeed = 0;
+			outLen = 0;
+			auto hh = h0;
+			do {
+				auto v = cmesh.target(hh);
+				const std::size_t vi = static_cast<std::size_t>(v.idx());
+				if (vi < smToOm.size() && smToOm[vi] >= 0 && seedVerts.count(smToOm[vi]))
+					++onSeed;
+				++outLen;
+				hh = cmesh.next(hh);
+			} while (hh != h0 && outLen < 100000);
+			return onSeed;
+		};
 
-			auto h = borderCycles[static_cast<std::size_t>(minCycleIdx)];
-			std::vector<CGALMesh::Face_index> pf;
-			std::vector<CGALMesh::Vertex_index> pv;
-			try {
-				PMP::triangulate_refine_and_fair_hole(
-					cmesh, h, std::back_inserter(pf), std::back_inserter(pv));
-				++filledCount;
-			} catch (...) {
-				std::cerr << "[surgery] CGAL fill failed len=" << minCycleLen << "\n";
-				break;
+		int bestIdx = -1;
+		int bestLen = -1;
+		int bestDelta = 1000000;
+		for (int bi = 0; bi < static_cast<int>(borderCycles.size()); ++bi) {
+			int cl = 0;
+			const int onSeed = cycleOnSeed(borderCycles[static_cast<std::size_t>(bi)], cl);
+			if (onSeed != cl || cl < 3)
+				continue;
+			const int delta = std::abs(cl - holeEdgeNum);
+			if (delta < bestDelta) {
+				bestDelta = delta;
+				bestIdx = bi;
+				bestLen = cl;
 			}
 		}
-		(void)filledCount;
 
-		// Write newly created faces from the CGAL submesh back to the original mesh
-		// Record the number of original faces in cmesh (faces that existed before hole filling)
-		// Original faces = faces in ringFaces, distinguished by cmesh face index
-		std::size_t origFaceCount = cmeshFacesBefore;
+		if (bestIdx >= 0) {
+			auto h = borderCycles[static_cast<std::size_t>(bestIdx)];
+			std::vector<CGALMesh::Face_index> pf;
+			const std::size_t facesBeforePass = cmesh.number_of_faces();
+			try {
+				// Triangulate only — no refine. Refine inserts boundary verts that do not
+				// exist on OM edges and cause complex vertex/edge on writeback.
+				PMP::triangulate_hole(cmesh, h, std::back_inserter(pf));
+			} catch (...) {
+				++fillFail;
+				std::cerr << "[surgery] CGAL triangulate_hole failed len=" << bestLen << "\n";
+			}
+			if (fillFail == 0 && cmesh.number_of_faces() <= facesBeforePass) {
+				++fillFail;
+				std::cerr << "[surgery] CGAL fill made no progress len=" << bestLen
+						  << " pf=" << pf.size() << "\n";
+			} else if (fillFail == 0) {
+				patchFacesCgal.insert(patchFacesCgal.end(), pf.begin(), pf.end());
+				++filledCount;
+			}
+		}
+
+		// Direct OM fan for tiny holes when CGAL submesh did not expose the seed cycle.
+		if (filledCount == 0 && holeEdgeNum >= 3 && holeEdgeNum <= 8) {
+			std::vector<int> loopVerts;
+			loopVerts.reserve(loop.size());
+			for (auto he : loop)
+				loopVerts.push_back(mesh.from_vertex_handle(he).idx());
+			bool fanOk = true;
+			std::set<int> fanFaces;
+			for (int i = 1; i + 1 < static_cast<int>(loopVerts.size()); ++i) {
+				auto fh = mesh.add_face(VertexHandle(loopVerts[0]),
+										VertexHandle(loopVerts[i]),
+										VertexHandle(loopVerts[i + 1]));
+				if (!fh.is_valid()) {
+					fh = mesh.add_face(VertexHandle(loopVerts[0]),
+									   VertexHandle(loopVerts[i + 1]),
+									   VertexHandle(loopVerts[i]));
+				}
+				if (!fh.is_valid()) {
+					fanOk = false;
+					break;
+				}
+				fanFaces.insert(fh.idx());
+			}
+			if (fanOk && !fanFaces.empty()) {
+				fairJobs.push_back(
+					{std::move(seedVerts), std::move(fanFaces), std::move(syncedPos)});
+				++holesProcessed;
+				continue;
+			}
+		}
+
+		// Write back only CGAL hole-patch faces (pf).
 		std::set<int> patchFaceIds;
 		int addOk = 0, addFail = 0;
-		for (auto fi = cmesh.faces_begin(); fi != cmesh.faces_end(); ++fi) {
-			// Skip original k-ring faces (they already exist in the original mesh)
-			if (static_cast<std::size_t>((*fi).idx()) < origFaceCount)
+		for (auto fi : patchFacesCgal) {
+			if (!cmesh.is_valid(fi))
 				continue;
 
-			auto hverts = cmesh.vertices_around_face(cmesh.halfedge(*fi));
+			auto hverts = cmesh.vertices_around_face(cmesh.halfedge(fi));
 			std::vector<int> fv;
 			for (auto sv : hverts) {
 				if (static_cast<std::size_t>(sv.idx()) < smToOm.size() &&
@@ -2138,18 +2172,24 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPr
 			if (fv.size() == 3) {
 				auto fh =
 					mesh.add_face(VertexHandle(fv[0]), VertexHandle(fv[1]), VertexHandle(fv[2]));
-				if (!fh.is_valid())
+				if (!fh.is_valid()) {
 					fh = mesh.add_face(
 						VertexHandle(fv[0]), VertexHandle(fv[2]), VertexHandle(fv[1]));
+				}
 				if (fh.is_valid()) {
 					patchFaceIds.insert(fh.idx());
 					++addOk;
-				} else
+				} else {
 					++addFail;
+				}
 			}
 		}
-		(void)addOk;
-		(void)addFail;
+
+		if (addOk == 0 && (filledCount > 0 || cmesh.number_of_faces() > cmeshFacesBefore)) {
+			std::cerr << "[surgery] CGAL produced patch but all add_face failed "
+						 "(complex edge/vertex or orientation); loopLen="
+					  << holeEdgeNum << " addFail=" << addFail << "\n";
+		}
 
 		if (!patchFaceIds.empty()) {
 			fairJobs.push_back(
@@ -2160,7 +2200,7 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPr
 	}
 
 	if (!postFillPreFairDumpPath.empty()) {
-		mesh.saveUnitCell(postFillPreFairDumpPath);
+		mesh.saveUnitCell(postFillPreFairDumpPath, /*split=*/false);
 		std::cerr << "[surgery] saved post-fill pre-fair mesh: " << postFillPreFairDumpPath << "\n";
 	}
 
@@ -2366,20 +2406,31 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 	if (toDeleteFaceSet.empty())
 		return false;
 
-	// Limit excision area: if the candidate deletion fraction is too high, the high curvature is
-	// global wrinkling rather than local necking
-	{
-		const std::size_t nfTotal = this->n_faces();
-		double cutFrac = nfTotal > 0 ? (double)toDeleteFaceSet.size() / nfTotal : 0;
-		if (cutFrac > opts.maxCutAreaFraction) {
-			std::cerr << "[surgery] aborted: cut fraction " << cutFrac << " > maxCutAreaFraction "
-					  << opts.maxCutAreaFraction << " (likely global wrinkle, not local neck)\n";
-			return false;
-		}
+	const std::size_t nfTotal = this->n_faces();
+	const auto cutFracOf = [nfTotal](const std::set<int>& faces) -> double {
+		return nfTotal > 0 ? static_cast<double>(faces.size()) / static_cast<double>(nfTotal) : 0.0;
+	};
+
+	const double seedCutFrac = cutFracOf(toDeleteFaceSet);
+	if (seedCutFrac > opts.maxCutAreaFraction) {
+		std::cerr << "[surgery] aborted: seed cut fraction " << seedCutFrac
+				  << " > maxCutAreaFraction " << opts.maxCutAreaFraction
+				  << " (likely global wrinkle, not local neck)\n";
+		return false;
 	}
 
 	// ── [3] Expand the deletion region using bi-Laplacian smoothing ──
+	std::set<int> seedDelete = toDeleteFaceSet;
 	expandSurgeryRegion(*this, toDeleteFaceSet, geom);
+
+	const double expandedCutFrac = cutFracOf(toDeleteFaceSet);
+	if (expandedCutFrac > opts.maxCutAreaFraction) {
+		// Expand overshot: keep the seed excision (still local) rather than wiping the mesh.
+		std::cerr << "[surgery] expand cut fraction " << expandedCutFrac << " > maxCutAreaFraction "
+				  << opts.maxCutAreaFraction << "; falling back to seed excision ("
+				  << seedDelete.size() << " faces)\n";
+		toDeleteFaceSet = std::move(seedDelete);
+	}
 
 	// ── [4] Delete faces -> garbage collect -> remove islands ──
 	for (int fi : toDeleteFaceSet)
@@ -2388,7 +2439,7 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 	cullSmallIslands(*this, opts.islandCullRatio);
 
 	if (!opts.preFillDumpPath.empty()) {
-		this->saveUnitCell(opts.preFillDumpPath);
+		this->saveUnitCell(opts.preFillDumpPath, /*split=*/false);
 		std::cerr << "[surgery] saved pre-fill mesh: " << opts.preFillDumpPath << "\n";
 	}
 

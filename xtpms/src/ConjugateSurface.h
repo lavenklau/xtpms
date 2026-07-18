@@ -19,7 +19,7 @@ namespace xtpms {
 // After computing, validates that the cotangent Laplacian at interior vertices
 // vanishes (mean curvature H ≈ 0, a necessary condition for minimal surfaces).
 bool computeConjugateSurface(DefaultTriMesh& mesh,
-                              const std::string& outputFile,
-                              double thetaDeg = 90.0);
+							 const std::string& outputFile,
+							 double thetaDeg = 90.0);
 
 } // namespace xtpms

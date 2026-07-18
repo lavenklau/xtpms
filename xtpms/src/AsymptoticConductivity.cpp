@@ -23,17 +23,21 @@ Eigen::Matrix3d faceFrame(const Eigen::Matrix3d& tri) {
 	Eigen::Vector3d n = (tri.col(1) - tri.col(0)).cross(tri.col(2) - tri.col(0)) / 2.0;
 	Eigen::Vector3d e1 = (tri.col(1) - tri.col(0)).normalized();
 	Eigen::Vector3d e2 = n.cross(e1);
-	if (e2.norm() > 1e-15) e2.normalize();
+	if (e2.norm() > 1e-15)
+		e2.normalize();
 	Eigen::Matrix3d fr;
-	fr.col(0) = e1; fr.col(1) = e2; fr.col(2) = n;
+	fr.col(0) = e1;
+	fr.col(1) = e2;
+	fr.col(2) = n;
 	return fr;
 }
 
 // ── secondFundamentalFormEdge ──────────────────────────────
 
-Eigen::Vector3d secondFundamentalFormEdge(
-	const Eigen::Matrix3d& tri,
-	const Compile1ring& v0, const Compile1ring& v1, const Compile1ring& v2) {
+Eigen::Vector3d secondFundamentalFormEdge(const Eigen::Matrix3d& tri,
+										  const Compile1ring& v0,
+										  const Compile1ring& v1,
+										  const Compile1ring& v2) {
 	// be_ij = -(n_j - n_i) · (v_j - v_i)
 	double be12 = -(v1.nv - v0.nv).dot(tri.col(1) - tri.col(0));
 	double be23 = -(v2.nv - v1.nv).dot(tri.col(2) - tri.col(1));
@@ -43,33 +47,36 @@ Eigen::Vector3d secondFundamentalFormEdge(
 
 // ── strainMatrixEdgeStretch ────────────────────────────────
 
-Eigen::Matrix3d strainMatrixEdgeStretch(
-	const Eigen::Matrix3d& tri,
-	const Eigen::Vector3d& e1, const Eigen::Vector3d& e2) {
+Eigen::Matrix3d strainMatrixEdgeStretch(const Eigen::Matrix3d& tri,
+										const Eigen::Vector3d& e1,
+										const Eigen::Vector3d& e2) {
 	Eigen::Matrix<double, 3, 2> fram;
-	fram.col(0) = e1; fram.col(1) = e2;
+	fram.col(0) = e1;
+	fram.col(1) = e2;
 
 	// tri1 = cyclic shift: [v1, v2, v0]
 	Eigen::Matrix3d tri1;
-	tri1.col(0) = tri.col(1); tri1.col(1) = tri.col(2); tri1.col(2) = tri.col(0);
+	tri1.col(0) = tri.col(1);
+	tri1.col(1) = tri.col(2);
+	tri1.col(2) = tri.col(0);
 
 	// d(i,j) = e_i · (v_{j+1} - v_j) for tangent components
 	Eigen::Matrix<double, 2, 3> d = fram.transpose() * (tri1 - tri);
 
 	// Build A from d
 	Eigen::Matrix3d A;
-	A << d(0, 0) * d(0, 0), d(1, 0) * d(1, 0), d(0, 0) * d(1, 0),
-		 d(0, 1) * d(0, 1), d(1, 1) * d(1, 1), d(0, 1) * d(1, 1),
-		 d(0, 2) * d(0, 2), d(1, 2) * d(1, 2), d(0, 2) * d(1, 2);
+	A << d(0, 0) * d(0, 0), d(1, 0) * d(1, 0), d(0, 0) * d(1, 0), d(0, 1) * d(0, 1),
+		d(1, 1) * d(1, 1), d(0, 1) * d(1, 1), d(0, 2) * d(0, 2), d(1, 2) * d(1, 2),
+		d(0, 2) * d(1, 2);
 
 	return A.inverse();
 }
 
 // ── areaShapeDerivative ───────────────────────────────────
 
-Eigen::Vector3d areaShapeDerivative(
-	const Eigen::Matrix3d& tri, const Eigen::Matrix3d& fr,
-	const Compile1ring v[3]) {
+Eigen::Vector3d areaShapeDerivative(const Eigen::Matrix3d& tri,
+									const Eigen::Matrix3d& fr,
+									const Compile1ring v[3]) {
 	auto Bn = strainMatrixEdgeStretch(tri, fr.col(0), fr.col(1));
 	auto be = secondFundamentalFormEdge(tri, v[0], v[1], v[2]);
 	Eigen::Vector3d bform = Bn * be; // {eps11, eps22, 2*eps12}
@@ -105,18 +112,18 @@ Eigen::Vector3d toVoigt2(const Eigen::Matrix2d& M) {
 
 Eigen::Matrix2d fromVoigt3(const Eigen::Vector3d& v) {
 	Eigen::Matrix2d M;
-	M(0, 0) = v[0]; M(1, 1) = v[1];
+	M(0, 0) = v[0];
+	M(1, 1) = v[1];
 	M(0, 1) = M(1, 0) = v[2] / 2.0;
 	return M;
 }
 
 // ── scalarGradientMatrix ──────────────────────────────────
 
-Eigen::Matrix<double, 2, 3> scalarGradientMatrix(
-	const Eigen::Matrix3d& tri, const Eigen::Matrix3d& fr) {
+Eigen::Matrix<double, 2, 3> scalarGradientMatrix(const Eigen::Matrix3d& tri,
+												 const Eigen::Matrix3d& fr) {
 	Eigen::Matrix2d V;
-	V <<
-		fr.leftCols<2>().transpose() * (tri.col(1) - tri.col(0)),
+	V << fr.leftCols<2>().transpose() * (tri.col(1) - tri.col(0)),
 		fr.leftCols<2>().transpose() * (tri.col(2) - tri.col(0));
 	Eigen::Matrix<double, 2, 3> S;
 	S << -1, 1, 0, -1, 0, 1;
@@ -125,10 +132,9 @@ Eigen::Matrix<double, 2, 3> scalarGradientMatrix(
 
 // ── assembleRHS ────────────────────────────────────────────
 
-Eigen::MatrixX3d assembleRHS(
-	const PeriodicTriMesh& mesh,
-	const std::vector<double>& cotWeights,
-	const std::vector<Eigen::Vector3d>& edgeVectors) {
+Eigen::MatrixX3d assembleRHS(const PeriodicTriMesh& mesh,
+							 const std::vector<double>& cotWeights,
+							 const std::vector<Eigen::Vector3d>& edgeVectors) {
 	const int nv = static_cast<int>(mesh.n_vertices());
 	Eigen::MatrixX3d blist(nv, 3);
 	blist.setZero();
@@ -138,7 +144,8 @@ Eigen::MatrixX3d assembleRHS(
 		for (auto voh_it = mesh.cvoh_iter(*v_it); voh_it.is_valid(); ++voh_it) {
 			EH eh = mesh.edge_handle(*voh_it);
 			Eigen::Vector3d ev = edgeVectors[static_cast<std::size_t>(eh.idx())];
-			if (mesh.halfedge_handle(eh, 0) != *voh_it) ev = -ev;
+			if (mesh.halfedge_handle(eh, 0) != *voh_it)
+				ev = -ev;
 			double w = cotWeights[static_cast<std::size_t>(eh.idx())];
 			blist.row(vi) -= w * ev.transpose();
 		}
@@ -148,11 +155,10 @@ Eigen::MatrixX3d assembleRHS(
 
 // ── evaluateConductivityTensor ─────────────────────────────
 
-Eigen::Matrix3d evaluateConductivityTensor(
-	const PeriodicTriMesh& mesh,
-	const Eigen::MatrixX3d& blist,
-	const Eigen::MatrixX3d& ulist,
-	double totalArea) {
+Eigen::Matrix3d evaluateConductivityTensor(const PeriodicTriMesh& mesh,
+										   const Eigen::MatrixX3d& blist,
+										   const Eigen::MatrixX3d& ulist,
+										   double totalArea) {
 	Eigen::Matrix3d nnTsum = Eigen::Matrix3d::Zero();
 	for (auto f_it = mesh.faces_begin(); f_it != mesh.faces_end(); ++f_it) {
 		Eigen::Matrix3d tri = getFacePeriodTri(mesh, *f_it);
@@ -176,10 +182,9 @@ Eigen::Matrix3d evaluateConductivityTensor(
 
 // ── solveAsymptoticConductivity ────────────────────────────
 
-Eigen::Matrix3d solveAsymptoticConductivity(
-	PeriodicTriMesh& mesh,
-	const VertexGeometry& geom,
-	Eigen::MatrixX3d& outU) {
+Eigen::Matrix3d solveAsymptoticConductivity(PeriodicTriMesh& mesh,
+											const VertexGeometry& geom,
+											Eigen::MatrixX3d& outU) {
 	auto L = assembleLaplacian(mesh, geom.cotWeights);
 	auto blist = assembleRHS(mesh, geom.cotWeights, geom.edgeVectors);
 
@@ -204,10 +209,9 @@ Eigen::Matrix3d solveAsymptoticConductivity(
 
 // ── computeSensitivity (full version, including second fundamental form) ──
 
-SensitivityResult computeSensitivity(
-	const PeriodicTriMesh& mesh,
-	const VertexGeometry& geom,
-	const Eigen::MatrixX3d& ulist) {
+SensitivityResult computeSensitivity(const PeriodicTriMesh& mesh,
+									 const VertexGeometry& geom,
+									 const Eigen::MatrixX3d& ulist) {
 	const int nv = static_cast<int>(mesh.n_vertices());
 	SensitivityResult result;
 	result.vSens = Eigen::MatrixXd::Zero(nv, 6);
@@ -223,14 +227,13 @@ SensitivityResult computeSensitivity(
 		// Face local coordinate frame
 		Eigen::Matrix3d fr = faceFrame(tri);
 		double A = fr.col(2).norm(); // = area
-		if (A < 1e-20) continue;
+		if (A < 1e-20)
+			continue;
 
 		// Get 1-ring data for the three vertices
-		Compile1ring vring[3] = {
-			geom.vrings[static_cast<std::size_t>(idx[0])],
-			geom.vrings[static_cast<std::size_t>(idx[1])],
-			geom.vrings[static_cast<std::size_t>(idx[2])]
-		};
+		Compile1ring vring[3] = {geom.vrings[static_cast<std::size_t>(idx[0])],
+								 geom.vrings[static_cast<std::size_t>(idx[1])],
+								 geom.vrings[static_cast<std::size_t>(idx[2])]};
 
 		// Second fundamental form
 		Eigen::Vector3d be = secondFundamentalFormEdge(tri, vring[0], vring[1], vring[2]);
@@ -307,7 +310,8 @@ ADCObjective evaluateADCObjective(const std::string& type, const Eigen::Matrix3d
 		obj.value = 1.0 - spread * spread;
 		Eigen::Vector3d vMax = eig.eigenvectors().col(2);
 		Eigen::Vector3d vMin = eig.eigenvectors().col(0);
-		Eigen::Matrix3d dObjdK = -2.0 * spread * (vMax * vMax.transpose() - vMin * vMin.transpose());
+		Eigen::Matrix3d dObjdK =
+			-2.0 * spread * (vMax * vMax.transpose() - vMin * vMin.transpose());
 		auto dv = toVoigt(dObjdK);
 		dv.tail<3>() *= 2.0;
 		obj.gradient = dv;
@@ -326,7 +330,8 @@ bool ConvergenceChecker::operator()(double obj, double step) {
 	objHistory.push_back(obj);
 	stepHistory.push_back(step);
 
-	if (static_cast<int>(objHistory.size()) < histSize) return false;
+	if (static_cast<int>(objHistory.size()) < histSize)
+		return false;
 
 	const int n = histSize - 1;
 	const int start = static_cast<int>(objHistory.size()) - n;
@@ -334,7 +339,10 @@ bool ConvergenceChecker::operator()(double obj, double step) {
 	for (int i = 0; i < n; ++i) {
 		double x = static_cast<double>(i);
 		double y = objHistory[static_cast<std::size_t>(start + i)];
-		sx += x; sy += y; sxy += x * y; sx2 += x * x;
+		sx += x;
+		sy += y;
+		sxy += x * y;
+		sx2 += x * x;
 	}
 	double slope = (n * sxy - sx * sy) / (n * sx2 - sx * sx);
 
@@ -346,7 +354,8 @@ bool ConvergenceChecker::operator()(double obj, double step) {
 				break;
 			}
 		}
-		if (allSmall || std::abs(slope) < objTol * 0.1) return true;
+		if (allSmall || std::abs(slope) < objTol * 0.1)
+			return true;
 	}
 	return false;
 }
@@ -356,22 +365,27 @@ double ConvergenceChecker::estimatePrecondition(double cmax) const {
 }
 
 double ConvergenceChecker::estimateNextStep(double tmax) const {
-	if (stepHistory.empty()) return tmax;
+	if (stepHistory.empty())
+		return tmax;
 	return std::min(tmax, std::abs(stepHistory.back()) * 1.5 + 0.01);
 }
 
 // ── tailorADC ─────────────────────────────────────────────
 
 void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
-	ConvergenceChecker conv(opts.convergeTol, opts.stepTol * opts.maxStep, opts.preconditionStrength);
+	ConvergenceChecker conv(
+		opts.convergeTol, opts.stepTol * opts.maxStep, opts.preconditionStrength);
 
 	RemeshOptions remeshOpts = opts.remeshOpts;
 	if (opts.enableRemesh && remeshOpts.targetLength < 0) {
 		remeshOpts = defaultRemeshOptions(mesh);
 		// Preserve user-specified non-default parameters
-		if (opts.remeshOpts.outerIter != 1) remeshOpts.outerIter = opts.remeshOpts.outerIter;
-		if (opts.remeshOpts.innerIter != 5) remeshOpts.innerIter = opts.remeshOpts.innerIter;
-		if (opts.remeshOpts.adaptiveEps != 0.6) remeshOpts.adaptiveEps = opts.remeshOpts.adaptiveEps;
+		if (opts.remeshOpts.outerIter != 1)
+			remeshOpts.outerIter = opts.remeshOpts.outerIter;
+		if (opts.remeshOpts.innerIter != 5)
+			remeshOpts.innerIter = opts.remeshOpts.innerIter;
+		if (opts.remeshOpts.adaptiveEps != 0.6)
+			remeshOpts.adaptiveEps = opts.remeshOpts.adaptiveEps;
 		std::cout << "fixed remesh targetLength = " << remeshOpts.targetLength
 				  << " minLength = " << remeshOpts.minLength << "\n";
 	}
@@ -381,39 +395,48 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		const int nv = static_cast<int>(mesh.n_vertices());
 		const int nf = static_cast<int>(mesh.n_faces());
 		if (nf == 0 || nv == 0)
-			return std::string(stage) + ": mesh is empty (nv=" + std::to_string(nv) + " nf=" + std::to_string(nf) + ")";
+			return std::string(stage) + ": mesh is empty (nv=" + std::to_string(nv) +
+				   " nf=" + std::to_string(nf) + ")";
 		if (nfLimit > 0 && nf > nfLimit)
-			return std::string(stage) + ": mesh exploded (nf=" + std::to_string(nf) + " > " + std::to_string(nfLimit) + ")";
+			return std::string(stage) + ": mesh exploded (nf=" + std::to_string(nf) + " > " +
+				   std::to_string(nfLimit) + ")";
 		// Check for NaN vertices
 		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 			auto p = mesh.point(*v_it);
 			if (std::isnan(p[0]) || std::isnan(p[1]) || std::isnan(p[2]))
-				return std::string(stage) + ": NaN vertex detected (v" + std::to_string((*v_it).idx()) + ")";
+				return std::string(stage) + ": NaN vertex detected (v" +
+					   std::to_string((*v_it).idx()) + ")";
 		}
 		// Check for boundary edges — a closed periodic mesh must have zero boundary edges.
 		// Any boundary edge means the mesh has developed holes; optimization must terminate.
 		int nBnd = 0;
 		for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it)
-			if (mesh.is_boundary(*e_it)) ++nBnd;
+			if (mesh.is_boundary(*e_it))
+				++nBnd;
 		if (nBnd > 0)
-			return std::string(stage) + ": boundary edges detected (" + std::to_string(nBnd) + " edges / " + std::to_string(nf) + " faces), mesh is no longer closed";
+			return std::string(stage) + ": boundary edges detected (" + std::to_string(nBnd) +
+				   " edges / " + std::to_string(nf) + " faces), mesh is no longer closed";
 		return "";
 	};
 
-	// Save the mesh from the best iteration; can roll back to it if mesh degenerates late in optimization
+	// Save the mesh from the best iteration; can roll back to it if mesh degenerates late in
+	// optimization
 	PeriodicTriMesh bestMesh;
 	double bestObjValue = -std::numeric_limits<double>::infinity();
 	bool haveBest = false;
 	auto saveBest = [&](double objVal, const Eigen::Matrix3d& kA) {
-		// Physical validity check: APAC=kA_trace/3 should be in [0, 1], each diagonal element should also be in [0, 1]
-		// Out-of-range values are typically numerical artifacts from sliver triangles making L non-PSD; reject them
-		if (objVal <= 0 || objVal >= 1.0) return;
+		// Physical validity check: APAC=kA_trace/3 should be in [0, 1], each diagonal element
+		// should also be in [0, 1] Out-of-range values are typically numerical artifacts from
+		// sliver triangles making L non-PSD; reject them
+		if (objVal <= 0 || objVal >= 1.0)
+			return;
 		for (int i = 0; i < 3; ++i) {
-			if (kA(i, i) < -1e-6 || kA(i, i) > 1.0 + 1e-6) return;
+			if (kA(i, i) < -1e-6 || kA(i, i) > 1.0 + 1e-6)
+				return;
 		}
 		if (objVal > bestObjValue) {
 			bestObjValue = objVal;
-			bestMesh = mesh;   // OpenMesh deep copy
+			bestMesh = mesh; // OpenMesh deep copy
 			haveBest = true;
 		}
 	};
@@ -426,19 +449,26 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 
 	for (int iter = 0; iter < opts.maxIter; ++iter) {
 		// [1] surgery
-		if (opts.enableSurgery && iter >= opts.surgeryStartIter && iter % opts.surgeryInterval == 0 && iter > 0) {
+		if (opts.enableSurgery && iter >= opts.surgeryStartIter &&
+			iter % opts.surgeryInterval == 0 && iter > 0) {
 			if (mesh.surgery(opts.surgeryOpts)) {
 				mesh.garbage_collection();
 				mesh.removeNonPeriodicIslands();
 				// Strictly ensure single connected component: avoid multi-dimensional null space
-				// of FEM Laplacian causing ill-conditioned kA solution (negative kA diagonals observed)
+				// of FEM Laplacian causing ill-conditioned kA solution (negative kA diagonals
+				// observed)
 				int removed = mesh.keepLargestComponent();
 				if (removed > 0)
 					std::cout << "surgery: removed " << removed << " residual component(s)\n";
-				std::cout << "surgery performed at iter " << iter
-						  << " nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
-						  << " χ=" << (static_cast<int>(mesh.n_vertices()) - static_cast<int>(mesh.n_edges()) + static_cast<int>(mesh.n_faces()))
-						  << " g=" << ((2.0 - (static_cast<int>(mesh.n_vertices()) - static_cast<int>(mesh.n_edges()) + static_cast<int>(mesh.n_faces()))) / 2.0)
+				std::cout << "surgery performed at iter " << iter << " nv=" << mesh.n_vertices()
+						  << " nf=" << mesh.n_faces() << " χ="
+						  << (static_cast<int>(mesh.n_vertices()) -
+							  static_cast<int>(mesh.n_edges()) + static_cast<int>(mesh.n_faces()))
+						  << " g="
+						  << ((2.0 - (static_cast<int>(mesh.n_vertices()) -
+									  static_cast<int>(mesh.n_edges()) +
+									  static_cast<int>(mesh.n_faces()))) /
+							  2.0)
 						  << "\n";
 				if (!opts.outputDir.empty()) {
 					mesh.saveUnitCell(opts.outputDir + "/aftsur_" + std::to_string(iter) + ".obj");
@@ -454,16 +484,22 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			delaunayRemesh(mesh, remeshOpts);
 			bool hasBoundary = false;
 			for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end() && !hasBoundary; ++e_it) {
-				if (mesh.is_boundary(*e_it)) hasBoundary = true;
+				if (mesh.is_boundary(*e_it))
+					hasBoundary = true;
 			}
-			if (hasBoundary) mesh.mergePeriodBoundary();
+			if (hasBoundary)
+				mesh.mergePeriodBoundary();
 			// Clean up isolated vertices
 			{
 				mesh.request_vertex_status();
 				bool cleaned = false;
 				for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it)
-					if (mesh.valence(*v_it) == 0) { mesh.delete_vertex(*v_it, false); cleaned = true; }
-				if (cleaned) mesh.garbage_collection();
+					if (mesh.valence(*v_it) == 0) {
+						mesh.delete_vertex(*v_it, false);
+						cleaned = true;
+					}
+				if (cleaned)
+					mesh.garbage_collection();
 			}
 		}
 
@@ -505,7 +541,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			saveBest(obj.value, kA);
 		}
 		if (std::isnan(obj.value) || obj.value <= 0) {
-			std::cerr << "tailorADC abort: invalid objective (" << obj.value << ") at iter " << iter << "\n";
+			std::cerr << "tailorADC abort: invalid objective (" << obj.value << ") at iter " << iter
+					  << "\n";
 			restoreBest();
 			break;
 		}
@@ -525,21 +562,25 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		}
 		auto kAv = toVoigt(kA);
 		kAv.tail<3>() /= 2.0;
-		Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-obj.gradient);
+		Eigen::VectorXd dfdvn =
+			(sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-obj.gradient);
 
 		// [9] preconditioned descent direction
 		double c = 1.0 / conv.estimatePrecondition(20.0);
 		auto L = assembleLaplacian(mesh, geom.cotWeights);
 		Eigen::SparseMatrix<double> G = -c * L;
-		for (int i = 0; i < nv; ++i) G.coeffRef(i, i) += geom.vertexAreas[i];
+		for (int i = 0; i < nv; ++i)
+			G.coeffRef(i, i) += geom.vertexAreas[i];
 
 		Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> precSolver(G);
 		double fweight = c + 1.0;
-		Eigen::VectorXd dn = -precSolver.solve(geom.vertexAreas.cwiseProduct(fweight * dfdvn).eval());
+		Eigen::VectorXd dn =
+			-precSolver.solve(geom.vertexAreas.cwiseProduct(fweight * dfdvn).eval());
 
 		// Sanity check: clamp dn to prevent numerical explosion
 		if (dn.hasNaN() || !dn.allFinite()) {
-			std::cerr << "tailorADC abort: NaN/Inf in preconditioned gradient at iter " << iter << "\n";
+			std::cerr << "tailorADC abort: NaN/Inf in preconditioned gradient at iter " << iter
+					  << "\n";
 			restoreBest();
 			break;
 		}
@@ -554,21 +595,23 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			avgEdgeLen = (nEdges > 0) ? avgEdgeLen / nEdges : 0.1;
 			double dnMax = 2.0 * avgEdgeLen;
 			for (int i = 0; i < nv; ++i) {
-				if (std::abs(dn[i]) > dnMax) dn[i] = (dn[i] > 0 ? dnMax : -dnMax);
+				if (std::abs(dn[i]) > dnMax)
+					dn[i] = (dn[i] > 0 ? dnMax : -dnMax);
 			}
 		}
-
 
 		// [10] Build per-vertex displacement: ADC gradient (normal) + mean curvature flow
 		std::vector<Eigen::Vector3d> stepVec(static_cast<std::size_t>(nv), Eigen::Vector3d::Zero());
 		double maxMcf = 0;
 		for (int i = 0; i < nv; ++i) {
-			stepVec[static_cast<std::size_t>(i)] = dn[i] * geom.vertexNormals[static_cast<std::size_t>(i)];
+			stepVec[static_cast<std::size_t>(i)] =
+				dn[i] * geom.vertexNormals[static_cast<std::size_t>(i)];
 			if (opts.mcfWeight > 0) {
 				Eigen::Vector3d mcf = opts.mcfWeight * geom.vrings[static_cast<std::size_t>(i)].Lx;
 				double mcfNorm = mcf.norm();
 				maxMcf = std::max(maxMcf, mcfNorm);
-				if (mcfNorm > 1.0) mcf *= 1.0 / mcfNorm;
+				if (mcfNorm > 1.0)
+					mcf *= 1.0 / mcfNorm;
 				stepVec[static_cast<std::size_t>(i)] += mcf;
 			}
 		}
@@ -583,16 +626,22 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			double faceStep = step;
 			int fidx[3];
 			getFaceVertexIdx(mesh, *fit, fidx);
-			Eigen::Vector3d oldE1 = toEig(makePeriod(mesh.point(VH(fidx[1])) - mesh.point(VH(fidx[0])), hp));
-			Eigen::Vector3d oldE2 = toEig(makePeriod(mesh.point(VH(fidx[2])) - mesh.point(VH(fidx[0])), hp));
+			Eigen::Vector3d oldE1 =
+				toEig(makePeriod(mesh.point(VH(fidx[1])) - mesh.point(VH(fidx[0])), hp));
+			Eigen::Vector3d oldE2 =
+				toEig(makePeriod(mesh.point(VH(fidx[2])) - mesh.point(VH(fidx[0])), hp));
 			Eigen::Vector3d oldN = oldE1.cross(oldE2);
 			double oldLen = oldN.norm();
-			if (oldLen < 1e-20) continue;
+			if (oldLen < 1e-20)
+				continue;
 			oldN /= oldLen;
 			while (faceStep > 1e-10) {
-				Eigen::Vector3d np0 = toEig(mesh.point(VH(fidx[0]))) + faceStep * stepVec[static_cast<std::size_t>(fidx[0])];
-				Eigen::Vector3d np1 = toEig(mesh.point(VH(fidx[1]))) + faceStep * stepVec[static_cast<std::size_t>(fidx[1])];
-				Eigen::Vector3d np2 = toEig(mesh.point(VH(fidx[2]))) + faceStep * stepVec[static_cast<std::size_t>(fidx[2])];
+				Eigen::Vector3d np0 = toEig(mesh.point(VH(fidx[0]))) +
+									  faceStep * stepVec[static_cast<std::size_t>(fidx[0])];
+				Eigen::Vector3d np1 = toEig(mesh.point(VH(fidx[1]))) +
+									  faceStep * stepVec[static_cast<std::size_t>(fidx[1])];
+				Eigen::Vector3d np2 = toEig(mesh.point(VH(fidx[2]))) +
+									  faceStep * stepVec[static_cast<std::size_t>(fidx[2])];
 				Eigen::Vector3d newE1 = toEig(makePeriod(toOM(np1) - toOM(np0), hp));
 				Eigen::Vector3d newE2 = toEig(makePeriod(toOM(np2) - toOM(np0), hp));
 				Eigen::Vector3d newN = newE1.cross(newE2);
@@ -633,12 +682,14 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				// Restore and reduce step size
 				for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it)
 					mesh.set_point(*v_it, savedPos[static_cast<std::size_t>((*v_it).idx())]);
-				if (ls >= 10) break; // give up, keep original positions
+				if (ls >= 10)
+					break; // give up, keep original positions
 				step *= 0.7;
 			}
 		}
 
-		// [11.5] post-displacement sanity check (iter=0 has no nf limit; accept high-density initial mesh)
+		// [11.5] post-displacement sanity check (iter=0 has no nf limit; accept high-density
+		// initial mesh)
 		{
 			int nfLim = (iter == 0) ? -1 : opts.nfLimit;
 			auto err = meshSanityCheck("after displacement", nfLim);
@@ -657,11 +708,9 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		int ne = static_cast<int>(mesh.n_edges());
 		int chi = nv - ne + nf;
 		double genus = chi != 0 ? (2.0 - chi) / 2.0 : 0.0;
-		std::cout << "iter=" << iter << " obj=" << obj.value
-				  << " step=" << step << " kA_trace=" << kA.trace()
-				  << " nv=" << nv << " nf=" << nf
-				  << " χ=" << chi << " g=" << genus
-				  << " maxDisp=" << maxDisp << " maxDn=" << maxDn
+		std::cout << "iter=" << iter << " obj=" << obj.value << " step=" << step
+				  << " kA_trace=" << kA.trace() << " nv=" << nv << " nf=" << nf << " χ=" << chi
+				  << " g=" << genus << " maxDisp=" << maxDisp << " maxDn=" << maxDn
 				  << " maxMcf=" << maxMcf << "\n";
 
 		// [12] convergence

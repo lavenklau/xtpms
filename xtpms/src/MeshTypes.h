@@ -11,4 +11,3 @@ using TriMesh = OpenMesh::TriMesh_ArrayKernelT<Traits>;
 using DefaultTriMesh = TriMesh<OpenMesh::DefaultTraits>;
 
 } // namespace xtpms
-

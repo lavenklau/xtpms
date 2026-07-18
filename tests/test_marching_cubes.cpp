@@ -64,8 +64,12 @@ TEST(MarchingCubes, openMeshExtractMatchesBufferPath) {
 		for (int y = 0; y < 2; ++y) {
 			for (int x = 0; x < 2; ++x) {
 				const int id = x + 2 * y + 4 * z;
-				nodes[static_cast<std::size_t>(id)] = {static_cast<double>(x), static_cast<double>(y), static_cast<double>(z),
-					(static_cast<double>(x) + static_cast<double>(y) + static_cast<double>(z) - 1.2)};
+				nodes[static_cast<std::size_t>(id)] = {static_cast<double>(x),
+													   static_cast<double>(y),
+													   static_cast<double>(z),
+													   (static_cast<double>(x) +
+														static_cast<double>(y) +
+														static_cast<double>(z) - 1.2)};
 			}
 		}
 	}
@@ -88,8 +92,8 @@ TEST(MarchingCubes, openMeshExtractMatchesBufferPath) {
 	EXPECT_EQ(mesh.n_vertices(), v0.size());
 }
 
-// Triply periodic gyroid (iso = 0). Domain is one unit cell [0,1]^3; the implicit is periodic in space,
-// but the mesh is naturally open on the six box faces (no periodic gluing).
+// Triply periodic gyroid (iso = 0). Domain is one unit cell [0,1]^3; the implicit is periodic in
+// space, but the mesh is naturally open on the six box faces (no periodic gluing).
 TEST(MarchingCubes, periodicGyroidGridWritesTriMeshFile) {
 	const int nx = 28;
 	const int ny = 28;
@@ -98,7 +102,8 @@ TEST(MarchingCubes, periodicGyroidGridWritesTriMeshFile) {
 		const double tx = 2.0 * M_PI * x;
 		const double ty = 2.0 * M_PI * y;
 		const double tz = 2.0 * M_PI * z;
-		return std::sin(tx) * std::cos(ty) + std::sin(ty) * std::cos(tz) + std::sin(tz) * std::cos(tx);
+		return std::sin(tx) * std::cos(ty) + std::sin(ty) * std::cos(tz) +
+			   std::sin(tz) * std::cos(tx);
 	};
 
 	const int nxp = nx + 1;
@@ -134,7 +139,9 @@ TEST(MarchingCubes, periodicGyroidGridWritesTriMeshFile) {
 				c[5] = nodeOf(i + 1, j, k + 1);
 				c[6] = nodeOf(i + 1, j + 1, k + 1);
 				c[7] = nodeOf(i, j + 1, k + 1);
-				voxels[{static_cast<std::int32_t>(i), static_cast<std::int32_t>(j), static_cast<std::int32_t>(k)}] = c;
+				voxels[{static_cast<std::int32_t>(i),
+						static_cast<std::int32_t>(j),
+						static_cast<std::int32_t>(k)}] = c;
 			}
 		}
 	}

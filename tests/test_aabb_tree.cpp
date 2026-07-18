@@ -50,8 +50,12 @@ TEST(AABBTree_TriMesh, QueryAtVertex_ZeroDistance) {
 
 TEST(AABBTree_TriMesh, TwoTriangles_PicksNearestPrimitive) {
 	// 三角形 0：z=0；三角形 1：z=10
-	std::vector<P> v{
-		{{0.0, 0.0, 0.0}}, {{1.0, 0.0, 0.0}}, {{0.0, 1.0, 0.0}}, {{0.0, 0.0, 10.0}}, {{1.0, 0.0, 10.0}}, {{0.0, 1.0, 10.0}}};
+	std::vector<P> v{{{0.0, 0.0, 0.0}},
+					 {{1.0, 0.0, 0.0}},
+					 {{0.0, 1.0, 0.0}},
+					 {{0.0, 0.0, 10.0}},
+					 {{1.0, 0.0, 10.0}},
+					 {{0.0, 1.0, 10.0}}};
 	std::vector<xtpms::TriMeshFace> f{{{0, 1, 2}}, {{3, 4, 5}}};
 	xtpms::TriMeshAABBTree tree;
 	tree.build(v, f);
@@ -114,7 +118,7 @@ struct Vec3 {
 	double z{};
 };
 
-template<>
+template <>
 struct xtpms::AABBPointTraits<Vec3> {
 	static double cx(const Vec3& p) { return p.x; }
 	static double cy(const Vec3& p) { return p.y; }

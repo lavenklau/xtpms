@@ -45,13 +45,12 @@ std::size_t VoxelIndexHash::operator()(VoxelIndex v) const noexcept {
 	return h;
 }
 
-void marchingCubesExtract(
-	const SparseVoxelCornerMap& voxels,
-	const std::vector<LevelSetNode>& nodes,
-	double isoValue,
-	std::vector<std::array<double, 3>>& outVertices,
-	std::vector<std::array<std::size_t, 3>>& outTriangles,
-	const ExtractMarchingCubesOptions& opts) {
+void marchingCubesExtract(const SparseVoxelCornerMap& voxels,
+						  const std::vector<LevelSetNode>& nodes,
+						  double isoValue,
+						  std::vector<std::array<double, 3>>& outVertices,
+						  std::vector<std::array<std::size_t, 3>>& outTriangles,
+						  const ExtractMarchingCubesOptions& opts) {
 	outVertices.clear();
 	outTriangles.clear();
 
@@ -143,12 +142,11 @@ void marchingCubesExtract(
 	}
 }
 
-void marchingCubesExtractToTriMesh(
-	const SparseVoxelCornerMap& voxels,
-	const std::vector<LevelSetNode>& nodes,
-	double isoValue,
-	DefaultTriMesh& outMesh,
-	const ExtractMarchingCubesOptions& opts) {
+void marchingCubesExtractToTriMesh(const SparseVoxelCornerMap& voxels,
+								   const std::vector<LevelSetNode>& nodes,
+								   double isoValue,
+								   DefaultTriMesh& outMesh,
+								   const ExtractMarchingCubesOptions& opts) {
 	std::vector<std::array<double, 3>> verts;
 	std::vector<std::array<std::size_t, 3>> tris;
 	marchingCubesExtract(voxels, nodes, isoValue, verts, tris, opts);
@@ -158,10 +156,10 @@ void marchingCubesExtractToTriMesh(
 	std::vector<DefaultTriMesh::VertexHandle> handles;
 	handles.reserve(verts.size());
 	for (const auto& p : verts) {
-		handles.push_back(outMesh.add_vertex(DefaultTriMesh::Point(
-			static_cast<DefaultTriMesh::Scalar>(p[0]),
-			static_cast<DefaultTriMesh::Scalar>(p[1]),
-			static_cast<DefaultTriMesh::Scalar>(p[2]))));
+		handles.push_back(
+			outMesh.add_vertex(DefaultTriMesh::Point(static_cast<DefaultTriMesh::Scalar>(p[0]),
+													 static_cast<DefaultTriMesh::Scalar>(p[1]),
+													 static_cast<DefaultTriMesh::Scalar>(p[2]))));
 	}
 
 	for (const auto& tri : tris) {

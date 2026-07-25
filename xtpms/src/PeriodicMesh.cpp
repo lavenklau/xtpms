@@ -19,6 +19,7 @@
 #include <map>
 #include <numeric>
 #include <queue>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -32,7 +33,6 @@
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/Polygon_mesh_processing/triangulate_hole.h>
 #include <CGAL/Polygon_mesh_processing/border.h>
-#include <CGAL/Polygon_mesh_processing/refine.h>
 
 #include <igl/cotmatrix.h>
 #include <igl/massmatrix.h>
@@ -2167,24 +2167,11 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPr
 				std::cerr << "[surgery] CGAL fill made no progress len=" << bestLen
 						  << " pf=" << pf.size() << "\n";
 			} else if (fillFail == 0) {
-				// triangulate_hole spans wide holes with chords far longer than the surrounding
-				// edges, which both trips the long-edge guard and distorts the bilaplacian
-				// fairing below. Refine the patch to the rim edge length; the region border is
-				// the OM hole loop and is preserved, so writeback stays manifold.
-				try {
-					std::vector<CGALMesh::Face_index> refFaces;
-					std::vector<CGALMesh::Vertex_index> refVerts;
-					PMP::refine(cmesh,
-								pf,
-								std::back_inserter(refFaces),
-								std::back_inserter(refVerts),
-								CGAL::parameters::density_control_factor(std::sqrt(2.0)));
-					pf.insert(pf.end(), refFaces.begin(), refFaces.end());
-				} catch (...) {
-					std::cerr << "[surgery] CGAL refine failed len=" << bestLen
-							  << ", keeping coarse patch\n";
-				}
-				patchFacesCgal.insert(patchFacesCgal.end(), pf.begin(), pf.end());
+				// Coarse triangulate_hole only. Do NOT isotropic_remesh here: densifying the
+				// CGAL patch (even with protect_constraints) left a closed mesh that later
+				// crashed in tailorADC (heap fail-fast ~iter 17) on D0.5-15. Long chords are
+				// shortened after writeback by OM interior-only splits (rim frozen).
+				patchFacesCgal = pf;
 				++filledCount;
 			}
 		}
@@ -2220,11 +2207,11 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPr
 			}
 		}
 
-		// Write back only CGAL hole-patch faces (pf).
+		// Write back only CGAL hole-patch faces (coarse triangulate_hole).
 		std::set<int> patchFaceIds;
 		int addOk = 0, addFail = 0;
 		for (auto fi : patchFacesCgal) {
-			if (!cmesh.is_valid(fi))
+			if (!cmesh.is_valid(fi) || cmesh.is_removed(fi))
 				continue;
 
 			auto hverts = cmesh.vertices_around_face(cmesh.halfedge(fi));
@@ -2265,6 +2252,93 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPr
 			std::cerr << "[surgery] CGAL produced patch but all add_face failed "
 						 "(complex edge/vertex or orientation); loopLen="
 					  << holeEdgeNum << " addFail=" << addFail << "\n";
+		}
+
+		// OM interior-only long-edge splits (rim frozen by endpoint pairs).
+		if (!patchFaceIds.empty()) {
+			std::set<std::pair<int, int>> rimEdgeKeys;
+			for (auto he : loop) {
+				int a = mesh.from_vertex_handle(he).idx();
+				int b = mesh.to_vertex_handle(he).idx();
+				if (a > b)
+					std::swap(a, b);
+				rimEdgeKeys.insert({a, b});
+			}
+			double rimSum = 0.0;
+			int rimCnt = 0;
+			for (auto he : loop) {
+				const int a = mesh.from_vertex_handle(he).idx();
+				const int b = mesh.to_vertex_handle(he).idx();
+				const Vec3d& pa =
+					syncedPos.count(a) ? syncedPos.at(a) : mesh.point(VertexHandle(a));
+				const Vec3d& pb =
+					syncedPos.count(b) ? syncedPos.at(b) : mesh.point(VertexHandle(b));
+				rimSum += (pb - pa).norm();
+				++rimCnt;
+			}
+			const double meanRim = (rimCnt > 0) ? (rimSum / static_cast<double>(rimCnt)) : 0.1;
+			const double splitThresh = 1.5 * meanRim;
+
+			auto edgeKey = [&](PeriodicTriMesh::EdgeHandle eh) {
+				int a = mesh.to_vertex_handle(mesh.halfedge_handle(eh, 0)).idx();
+				int b = mesh.from_vertex_handle(mesh.halfedge_handle(eh, 0)).idx();
+				if (a > b)
+					std::swap(a, b);
+				return std::make_pair(a, b);
+			};
+			auto patchEdgeLen = [&](PeriodicTriMesh::EdgeHandle eh) {
+				PeriodicTriMesh::HalfedgeHandle he = mesh.halfedge_handle(eh, 0);
+				const Vec3d& p0 = mesh.point(mesh.from_vertex_handle(he));
+				return mesh.wrapVector(mesh.point(mesh.to_vertex_handle(he)) - p0).norm();
+			};
+			auto collectPatchEdges = [&](std::vector<PeriodicTriMesh::EdgeHandle>& out) {
+				std::set<int> seen;
+				out.clear();
+				for (int fi : patchFaceIds) {
+					PeriodicTriMesh::FaceHandle fh = mesh.face_handle(fi);
+					if (!fh.is_valid() || mesh.status(fh).deleted())
+						continue;
+					for (auto fe = mesh.cfh_iter(fh); fe.is_valid(); ++fe) {
+						PeriodicTriMesh::EdgeHandle eh = mesh.edge_handle(*fe);
+						if (!eh.is_valid() || mesh.status(eh).deleted())
+							continue;
+						if (seen.insert(eh.idx()).second)
+							out.push_back(eh);
+					}
+				}
+			};
+
+			std::vector<PeriodicTriMesh::EdgeHandle> patchEdges;
+			mesh.request_face_status();
+			mesh.request_edge_status();
+			mesh.request_vertex_status();
+			int nInteriorSplits = 0;
+			for (int pass = 0; pass < 64; ++pass) {
+				collectPatchEdges(patchEdges);
+				PeriodicTriMesh::EdgeHandle best;
+				double bestLen = 0.0;
+				for (PeriodicTriMesh::EdgeHandle eh : patchEdges) {
+					if (rimEdgeKeys.count(edgeKey(eh)))
+						continue;
+					const double len = patchEdgeLen(eh);
+					if (len > splitThresh && len > bestLen) {
+						bestLen = len;
+						best = eh;
+					}
+				}
+				if (!best.is_valid())
+					break;
+				PeriodicTriMesh::HalfedgeHandle he = mesh.halfedge_handle(best, 0);
+				const Vec3d& p0 = mesh.point(mesh.from_vertex_handle(he));
+				Vec3d mid =
+					p0 + mesh.wrapVector(mesh.point(mesh.to_vertex_handle(he)) - p0) * 0.5;
+				PeriodicTriMesh::VertexHandle nv = mesh.split(best, mid);
+				++nInteriorSplits;
+				for (auto vf = mesh.cvf_iter(nv); vf.is_valid(); ++vf)
+					patchFaceIds.insert((*vf).idx());
+				if (nInteriorSplits >= 512)
+					break;
+			}
 		}
 
 		if (!patchFaceIds.empty()) {

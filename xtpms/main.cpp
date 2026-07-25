@@ -525,9 +525,7 @@ int cmdOptimize(const std::string& input,
 					  << " nf=" << mesh.n_faces() << "\n";
 
 			if (!outputDir.empty())
-				// Temporary: split=true for triage (befsplit.obj written first on crash path).
-				mesh.saveUnitCell(outputDir + "/iter_" + std::to_string(iter) + ".obj",
-								  /*split=*/true);
+				mesh.saveUnitCell(outputDir + "/iter_" + std::to_string(iter) + ".obj");
 		}
 	}
 

@@ -163,7 +163,7 @@ public:
 	// saving (default). When split=false, the original unwrap logic is used to save (does not
 	// modify the original mesh). splitEdges controls whether splitUnitCell executes Phase 1 edge
 	// splitting.
-	bool saveUnitCell(const std::string& filename, bool split = false, bool splitEdges = true) const;
+	bool saveUnitCell(const std::string& filename, bool split = true, bool splitEdges = true) const;
 
 	// Split unit cell for export; singularity is computed on the fused mesh before split,
 	// then propagated to split vertices (edge splits interpolate; dupPeriodFaces copy source).

@@ -456,7 +456,6 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		const std::string dumpDir = opts.outputDir.empty() ? std::string(".") : opts.outputDir;
 		const double maxFrac = opts.remeshOpts.maxEuclideanEdgeFracOfMinPeriod;
 
-
 		// [1] surgery
 		if (opts.enableSurgery && iter >= opts.surgeryStartIter &&
 			iter % opts.surgeryInterval == 0 && iter > 0) {
@@ -492,10 +491,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 					break;
 				}
 				if (!opts.outputDir.empty()) {
-					// Temporary: split=true to reproduce splitUnitCell crashes; befsplit.obj
-					// is written first inside saveUnitCell for batch triage.
-					mesh.saveUnitCell(opts.outputDir + "/aftsur_" + std::to_string(iter) + ".obj",
-									  /*split=*/true);
+					mesh.saveUnitCell(opts.outputDir + "/aftsur_" + std::to_string(iter) + ".obj");
 				}
 				// Reset convergence history after surgery (topology changed)
 				conv.objHistory.clear();
@@ -563,10 +559,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 
 		// [3] save intermediate
 		if (!opts.outputDir.empty() && iter % opts.saveInterval == 0) {
-			// Temporary: split=true to reproduce splitUnitCell crashes; befsplit.obj is written
-			// first inside saveUnitCell for batch triage.
-			mesh.saveUnitCell(opts.outputDir + "/iter_" + std::to_string(iter) + ".obj",
-							  /*split=*/true);
+			mesh.saveUnitCell(opts.outputDir + "/iter_" + std::to_string(iter) + ".obj");
 		}
 
 		// [4] geometry
@@ -779,8 +772,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 
 	// save final
 	if (!opts.outputDir.empty()) {
-		// Temporary: split=true for triage (befsplit.obj written first on crash path).
-		mesh.saveUnitCell(opts.outputDir + "/final.obj", /*split=*/true);
+		mesh.saveUnitCell(opts.outputDir + "/final.obj");
 	}
 }
 

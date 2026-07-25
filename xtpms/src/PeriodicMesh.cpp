@@ -1478,15 +1478,10 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 			flist.push_back({a, b, c});
 		}
 
-		// Lookup existing vertices by position->index
-		std::map<std::array<int, 3>, int> posMap; // quantized coordinates -> vertex index
-		auto quantize = [&](double x, double y, double z) -> std::array<int, 3> {
-			return {static_cast<int>(std::round(x * 1e5)),
-					static_cast<int>(std::round(y * 1e5)),
-					static_cast<int>(std::round(z * 1e5))};
-		};
-		for (std::size_t i = 0; i < nv0; ++i)
-			posMap[quantize(vpos[i][0], vpos[i][1], vpos[i][2])] = static_cast<int>(i);
+		// Identify duplicated corners by (source vertex, lattice offset). A quantized position
+		// cannot separate two distinct vertices that map to the same torus point, and merging
+		// them collapses a triangle onto itself.
+		std::map<std::array<int, 4>, int> copyMap;
 
 		std::vector<std::array<double, 3>> extraV;
 
@@ -1497,6 +1492,8 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 					vnew[j][k] =
 						vpos[static_cast<std::size_t>(f.v[j])][static_cast<std::size_t>(k)];
 
+			// Lattice offset (in units of L) applied to each corner while unfolding.
+			int off[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
 			bool hasPeriod = false;
 			// Edge-based unfolding (aligned with minsurf dupPeriodFaces)
 			for (int j = 0; j < 3; ++j) {
@@ -1505,9 +1502,11 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 					double ej = vnew[j1][k] - vnew[j][k];
 					if (ej < -hp[k]) {
 						vnew[j1][k] += L[k];
+						++off[j1][k];
 						hasPeriod = true;
 					} else if (ej > hp[k]) {
 						vnew[j][k] += L[k];
+						++off[j][k];
 						hasPeriod = true;
 					}
 				}
@@ -1517,24 +1516,29 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 				double cmax = std::max({vnew[0][k], vnew[1][k], vnew[2][k]});
 				double cmin = std::min({vnew[0][k], vnew[1][k], vnew[2][k]});
 				if (cmax > L[k] + 1e-5) {
-					vnew[0][k] -= L[k];
-					vnew[1][k] -= L[k];
-					vnew[2][k] -= L[k];
+					for (int j = 0; j < 3; ++j) {
+						vnew[j][k] -= L[k];
+						--off[j][k];
+					}
 				} else if (cmin < -1e-5) {
-					vnew[0][k] += L[k];
-					vnew[1][k] += L[k];
-					vnew[2][k] += L[k];
+					for (int j = 0; j < 3; ++j) {
+						vnew[j][k] += L[k];
+						++off[j][k];
+					}
 				}
 			}
 
 			if (hasPeriod) {
 				for (int j = 0; j < 3; ++j) {
-					auto qk = quantize(vnew[j][0], vnew[j][1], vnew[j][2]);
-					if (posMap.count(qk)) {
-						f.v[j] = posMap[qk];
+					if (off[j][0] == 0 && off[j][1] == 0 && off[j][2] == 0)
+						continue; // corner stays on its source vertex
+					const std::array<int, 4> key = {f.v[j], off[j][0], off[j][1], off[j][2]};
+					auto it = copyMap.find(key);
+					if (it != copyMap.end()) {
+						f.v[j] = it->second;
 					} else {
 						int newIdx = static_cast<int>(nv0 + extraV.size());
-						posMap[qk] = newIdx;
+						copyMap.emplace(key, newIdx);
 						extraV.push_back({vnew[j][0], vnew[j][1], vnew[j][2]});
 						f.v[j] = newIdx;
 					}
@@ -1554,7 +1558,14 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 			vh.push_back(this->add_vertex(Vec3d(static_cast<DefaultTriMesh::Scalar>(ev[0]),
 												static_cast<DefaultTriMesh::Scalar>(ev[1]),
 												static_cast<DefaultTriMesh::Scalar>(ev[2]))));
+		int skippedDegenerate = 0;
 		for (const auto& f : flist) {
+			// A repeated index would make add_face insert a self-loop edge and corrupt the
+			// half-edge structure.
+			if (f.v[0] == f.v[1] || f.v[1] == f.v[2] || f.v[2] == f.v[0]) {
+				++skippedDegenerate;
+				continue;
+			}
 			auto fh = this->add_face(vh[static_cast<std::size_t>(f.v[0])],
 									 vh[static_cast<std::size_t>(f.v[1])],
 									 vh[static_cast<std::size_t>(f.v[2])]);
@@ -1563,6 +1574,10 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 							   vh[static_cast<std::size_t>(f.v[2])],
 							   vh[static_cast<std::size_t>(f.v[1])]);
 		}
+		if (skippedDegenerate > 0) {
+			std::cerr << "[splitUnitCell] skipped " << skippedDegenerate
+					  << " degenerate face(s) with repeated vertices\n";
+		}
 	}
 }
 
@@ -1570,37 +1585,10 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 // saveUnitCell / saveSplitUnitCellWithSingularity
 // ──────────────────────────────────────────────────────────────────────────
 
-namespace {
-
-// Temporary debug hook: fixed name beside the intended split output so a crash
-// inside splitUnitCell still leaves the pre-split mesh on disk for batch triage.
-std::string befsplitPathBeside(const std::string& filename) {
-	const auto pos = filename.find_last_of("/\\");
-	if (pos == std::string::npos)
-		return "befsplit.obj";
-	return filename.substr(0, pos + 1) + "befsplit.obj";
-}
-
-bool writeBefsplitObj(const PeriodicTriMesh& src, const std::string& besidePath) {
-	PeriodicTriMesh pre = src;
-	pre.periodShift();
-	const std::string path = befsplitPathBeside(besidePath);
-	const bool ok = OpenMesh::IO::write_mesh(pre, path);
-	if (ok)
-		std::cerr << "[saveUnitCell] wrote " << path << " (pre-split)\n";
-	else
-		std::cerr << "[saveUnitCell] failed to write " << path << " (pre-split)\n";
-	return ok;
-}
-
-} // namespace
-
 bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPath,
 													   const std::string& singularityPath,
 													   int surgeryType,
 													   bool splitEdges) const {
-	writeBefsplitObj(*this, objPath);
-
 	PeriodicTriMesh mesh = *this;
 	std::vector<double> curv = computeSingularityMeasure(mesh, surgeryType);
 
@@ -1713,15 +1701,8 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 		flist.push_back({a, b, c});
 	}
 
-	std::map<std::array<int, 3>, int> posMap;
-	auto quantize = [](double x, double y, double z) -> std::array<int, 3> {
-		return {static_cast<int>(std::round(x * 1e5)),
-				static_cast<int>(std::round(y * 1e5)),
-				static_cast<int>(std::round(z * 1e5))};
-	};
-	for (std::size_t i = 0; i < nv0; ++i) {
-		posMap[quantize(vpos[i][0], vpos[i][1], vpos[i][2])] = static_cast<int>(i);
-	}
+	// Identify duplicated corners by (source vertex, lattice offset); see splitUnitCell.
+	std::map<std::array<int, 4>, int> copyMap;
 
 	std::vector<std::array<double, 3>> extraV;
 	std::vector<double> extraCurv;
@@ -1734,6 +1715,7 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 			}
 		}
 
+		int off[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
 		bool hasPeriod = false;
 		for (int j = 0; j < 3; ++j) {
 			const int j1 = (j + 1) % 3;
@@ -1741,9 +1723,11 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 				const double ej = vnew[j1][k] - vnew[j][k];
 				if (ej < -hp[k]) {
 					vnew[j1][k] += L[k];
+					++off[j1][k];
 					hasPeriod = true;
 				} else if (ej > hp[k]) {
 					vnew[j][k] += L[k];
+					++off[j][k];
 					hasPeriod = true;
 				}
 			}
@@ -1752,28 +1736,32 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 			const double cmax = std::max({vnew[0][k], vnew[1][k], vnew[2][k]});
 			const double cmin = std::min({vnew[0][k], vnew[1][k], vnew[2][k]});
 			if (cmax > L[k] + 1e-5) {
-				vnew[0][k] -= L[k];
-				vnew[1][k] -= L[k];
-				vnew[2][k] -= L[k];
+				for (int j = 0; j < 3; ++j) {
+					vnew[j][k] -= L[k];
+					--off[j][k];
+				}
 			} else if (cmin < -1e-5) {
-				vnew[0][k] += L[k];
-				vnew[1][k] += L[k];
-				vnew[2][k] += L[k];
+				for (int j = 0; j < 3; ++j) {
+					vnew[j][k] += L[k];
+					++off[j][k];
+				}
 			}
 		}
 
 		if (hasPeriod) {
 			for (int j = 0; j < 3; ++j) {
+				if (off[j][0] == 0 && off[j][1] == 0 && off[j][2] == 0)
+					continue; // corner stays on its source vertex
 				const int srcIdx = f.v[j];
-				const double srcCurv = curv[static_cast<std::size_t>(srcIdx)];
-				const auto qk = quantize(vnew[j][0], vnew[j][1], vnew[j][2]);
-				if (posMap.count(qk)) {
-					f.v[j] = posMap[qk];
+				const std::array<int, 4> key = {srcIdx, off[j][0], off[j][1], off[j][2]};
+				auto it = copyMap.find(key);
+				if (it != copyMap.end()) {
+					f.v[j] = it->second;
 				} else {
 					const int newIdx = static_cast<int>(nv0 + extraV.size());
-					posMap[qk] = newIdx;
+					copyMap.emplace(key, newIdx);
 					extraV.push_back({vnew[j][0], vnew[j][1], vnew[j][2]});
-					extraCurv.push_back(srcCurv);
+					extraCurv.push_back(curv[static_cast<std::size_t>(srcIdx)]);
 					f.v[j] = newIdx;
 				}
 			}
@@ -1797,6 +1785,10 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 										   static_cast<DefaultTriMesh::Scalar>(ev[2]))));
 	}
 	for (const auto& f : flist) {
+		// A repeated index would make add_face insert a self-loop edge and corrupt the
+		// half-edge structure.
+		if (f.v[0] == f.v[1] || f.v[1] == f.v[2] || f.v[2] == f.v[0])
+			continue;
 		auto fh = mesh.add_face(vh[static_cast<std::size_t>(f.v[0])],
 								vh[static_cast<std::size_t>(f.v[1])],
 								vh[static_cast<std::size_t>(f.v[2])]);
@@ -1835,8 +1827,6 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 
 bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split, bool splitEdges) const {
 	if (split) {
-		// Dump unsplit mesh first so a splitUnitCell crash still leaves a triage OBJ.
-		writeBefsplitObj(*this, filename);
 		// Copy the mesh, then write out directly after splitUnitCell
 		PeriodicTriMesh copy = *this;
 		copy.splitUnitCell(splitEdges);

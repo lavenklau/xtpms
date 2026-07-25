@@ -6,6 +6,7 @@
 #include <cmath>
 #include <iostream>
 #include <queue>
+#include <string>
 #include <vector>
 
 namespace xtpms {
@@ -225,16 +226,30 @@ double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh, double flatLength, 
 
 // ── delaunayRemesh (strictly following the minsurf procedure) ──
 
-void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
+bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	mesh.request_vertex_status();
 	mesh.request_edge_status();
 	mesh.request_halfedge_status();
 	mesh.request_face_status();
 
-	periodShift(mesh);
+	const std::string dumpDir =
+		!opts.failureDumpDir.empty()
+			? opts.failureDumpDir
+			: (!opts.debugOutputDir.empty() ? opts.debugOutputDir : std::string("."));
+	const double maxFrac = opts.maxEuclideanEdgeFracOfMinPeriod;
+	auto checkAfter = [&](const PeriodicTriMesh& before, const std::string& tag) -> bool {
+		return PeriodicTriMesh::validateEuclideanEdgesOrDump(mesh, before, tag, dumpDir, maxFrac);
+	};
+
+	{
+		PeriodicTriMesh before = mesh;
+		periodShift(mesh);
+		if (!checkAfter(before, "remesh_input_shift"))
+			return false;
+	}
 
 	if (opts.innerIter <= 0)
-		return;
+		return true;
 
 	double flatLen = opts.targetLength;
 	if (flatLen < 0)
@@ -262,9 +277,11 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	dbgSave("0_input");
 
 	for (int outer = 0; outer < opts.outerIter; ++outer) {
+		const std::string outerTag = "remesh_o" + std::to_string(outer);
 
 		// ── Phase 1: split long edges + collapse short edges ──
 		{
+			PeriodicTriMesh beforeSplit = mesh;
 			// Split (single pass, iterate over snapshot)
 			std::vector<EH> toSplit;
 			for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
@@ -280,10 +297,12 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 				Vec3d mid = periodMidpoint(mesh, he);
 				mesh.split(eh, mid);
 			}
-			periodShift(mesh);
 			mesh.garbage_collection();
+			if (!checkAfter(beforeSplit, outerTag + "_split"))
+				return false;
 			dbgSave("1_after_split");
 
+			PeriodicTriMesh beforeCollapse = mesh;
 			// Collapse (single pass)
 			std::vector<EH> toCollapse;
 			for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
@@ -306,19 +325,24 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 				Vec3d mid = periodMidpoint(mesh, he);
 				double heLen = periodEdgeLength(mesh, eh);
 				// Aligned with minsurf: collapse should not produce neighbor edges longer than lmax
-				// If the longest neighbor edge of the kept vertex after collapse > lmax, and the
-				// current edge is not extremely short (> 5% minLen), skip
+				// The merged vertex inherits both endpoints' 1-rings, so both are measured from
+				// mid. If the longest one exceeds lmax, and the current edge is not extremely
+				// short (> 5% minLen), skip
 				{
 					VH vKeep = mesh.to_vertex_handle(he);
 					VH vRemove = mesh.from_vertex_handle(he);
 					double rmax = 0;
 					const Vec3d hp = mesh.halfPeriod();
-					for (auto voh = mesh.cvoh_iter(vKeep); voh.is_valid(); ++voh) {
-						VH nb = mesh.to_vertex_handle(*voh);
-						if (nb == vRemove)
-							continue;
-						double d = makePeriod(mesh.point(nb) - mid, hp).norm();
-						rmax = std::max(rmax, d);
+					const VH ends[2] = {vKeep, vRemove};
+					for (int s = 0; s < 2; ++s) {
+						const VH other = ends[1 - s];
+						for (auto voh = mesh.cvoh_iter(ends[s]); voh.is_valid(); ++voh) {
+							VH nb = mesh.to_vertex_handle(*voh);
+							if (nb == other)
+								continue;
+							double d = makePeriod(mesh.point(nb) - mid, hp).norm();
+							rmax = std::max(rmax, d);
+						}
 					}
 					if (rmax > lmax && heLen > 0.05 * minLen)
 						continue;
@@ -331,7 +355,8 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 				++collapsed;
 			}
 			mesh.garbage_collection();
-			periodShift(mesh);
+			if (!checkAfter(beforeCollapse, outerTag + "_collapse"))
+				return false;
 			dbgSave("2_after_collapse");
 		}
 
@@ -377,11 +402,17 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 			}
 		};
 
-		flipDelaunay();
-		dbgSave("3_after_flip");
+		{
+			PeriodicTriMesh beforeFlip = mesh;
+			flipDelaunay();
+			if (!checkAfter(beforeFlip, outerTag + "_flip0"))
+				return false;
+			dbgSave("3_after_flip");
+		}
 
 		// ── Phase 3: smooth + flip ──
 		for (int inner = 0; inner < opts.innerIter; ++inner) {
+			PeriodicTriMesh beforeSmooth = mesh;
 			const std::size_t nv = mesh.n_vertices();
 			std::vector<Vec3d> newPos(nv);
 			const Vec3d hp = mesh.halfPeriod();
@@ -428,9 +459,13 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 			for (auto vi = mesh.vertices_begin(); vi != mesh.vertices_end(); ++vi) {
 				mesh.set_point(*vi, newPos[static_cast<std::size_t>((*vi).idx())]);
 			}
-			periodShift(mesh);
+			if (!checkAfter(beforeSmooth, outerTag + "_smooth" + std::to_string(inner)))
+				return false;
 			dbgSave("4_smooth" + std::to_string(inner));
+			PeriodicTriMesh beforeInnerFlip = mesh;
 			flipDelaunay();
+			if (!checkAfter(beforeInnerFlip, outerTag + "_flip" + std::to_string(inner)))
+				return false;
 			dbgSave("5_flip" + std::to_string(inner));
 		}
 	}
@@ -439,6 +474,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	// The previous "delete_vertex + add_face" approach lacked topology checks and could leave holes
 	// in non-manifold neighbor configurations
 	{
+		PeriodicTriMesh beforeDeg3 = mesh;
 		// Collect a snapshot first to avoid modifying during iteration
 		std::vector<VH> deg3Verts;
 		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
@@ -472,10 +508,10 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 		if (skipped > 0)
 			std::cerr << "[remesh] deg3 removal: collapsed=" << collapsed << " skipped=" << skipped
 					  << " (non-manifold neighbors)\n";
+		mesh.garbage_collection();
+		if (!checkAfter(beforeDeg3, "remesh_deg3"))
+			return false;
 	}
-
-	mesh.garbage_collection();
-	periodShift(mesh);
 
 	// Sanity check
 	int bndEdges = 0;
@@ -484,6 +520,7 @@ void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 			++bndEdges;
 	if (bndEdges > 0)
 		std::cerr << "WARNING: delaunayRemesh produced " << bndEdges << " boundary edges\n";
+	return true;
 }
 
 int makeIntrinsicDelaunay(PeriodicTriMesh& mesh) {

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <numeric>
+#include <string>
 
 namespace xtpms {
 
@@ -378,6 +379,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 
 	RemeshOptions remeshOpts = opts.remeshOpts;
 	if (opts.enableRemesh && remeshOpts.targetLength < 0) {
+		const auto userFrac = opts.remeshOpts.maxEuclideanEdgeFracOfMinPeriod;
+		const auto userFailDir = opts.remeshOpts.failureDumpDir;
 		remeshOpts = defaultRemeshOptions(mesh);
 		// Preserve user-specified non-default parameters
 		if (opts.remeshOpts.outerIter != 1)
@@ -386,6 +389,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			remeshOpts.innerIter = opts.remeshOpts.innerIter;
 		if (opts.remeshOpts.adaptiveEps != 0.6)
 			remeshOpts.adaptiveEps = opts.remeshOpts.adaptiveEps;
+		remeshOpts.maxEuclideanEdgeFracOfMinPeriod = userFrac;
+		remeshOpts.failureDumpDir = userFailDir;
 		std::cout << "fixed remesh targetLength = " << remeshOpts.targetLength
 				  << " minLength = " << remeshOpts.minLength << "\n";
 	}
@@ -448,9 +453,13 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 	};
 
 	for (int iter = 0; iter < opts.maxIter; ++iter) {
+		const std::string dumpDir = opts.outputDir.empty() ? std::string(".") : opts.outputDir;
+		const double maxFrac = opts.remeshOpts.maxEuclideanEdgeFracOfMinPeriod;
+
 		// [1] surgery
 		if (opts.enableSurgery && iter >= opts.surgeryStartIter &&
 			iter % opts.surgeryInterval == 0 && iter > 0) {
+			PeriodicTriMesh beforeSurgery = mesh;
 			if (mesh.surgery(opts.surgeryOpts)) {
 				mesh.garbage_collection();
 				mesh.removeNonPeriodicIslands();
@@ -470,6 +479,17 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 									  static_cast<int>(mesh.n_faces()))) /
 							  2.0)
 						  << "\n";
+				if (!PeriodicTriMesh::validateEuclideanEdgesOrDump(mesh,
+																   beforeSurgery,
+																   "surgery_iter" +
+																	   std::to_string(iter),
+																   dumpDir,
+																   maxFrac)) {
+					std::cerr << "tailorADC abort: excessive Euclidean edge after surgery at iter "
+							  << iter << "\n";
+					restoreBest();
+					break;
+				}
 				if (!opts.outputDir.empty()) {
 					mesh.saveUnitCell(opts.outputDir + "/aftsur_" + std::to_string(iter) + ".obj");
 				}
@@ -481,14 +501,36 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 
 		// [2] remesh
 		if (opts.enableRemesh) {
-			delaunayRemesh(mesh, remeshOpts);
+			PeriodicTriMesh beforeRemesh = mesh;
+			RemeshOptions remeshOptsIter = remeshOpts;
+			if (remeshOptsIter.failureDumpDir.empty())
+				remeshOptsIter.failureDumpDir = dumpDir;
+			if (!delaunayRemesh(mesh, remeshOptsIter)) {
+				std::cerr << "tailorADC abort: remesh produced excessive Euclidean edge at iter "
+						  << iter << "\n";
+				// Remesh already dumped its before/after; also keep pre-remesh snapshot.
+				beforeRemesh.saveUnitCell(dumpDir + "/longedge_before_remesh_iter" +
+											  std::to_string(iter) + ".obj",
+										  /*split=*/false);
+				restoreBest();
+				break;
+			}
 			bool hasBoundary = false;
 			for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end() && !hasBoundary; ++e_it) {
 				if (mesh.is_boundary(*e_it))
 					hasBoundary = true;
 			}
-			if (hasBoundary)
+			if (hasBoundary) {
+				PeriodicTriMesh beforeMerge = mesh;
 				mesh.mergePeriodBoundary();
+				if (!PeriodicTriMesh::validateEuclideanEdgesOrDump(
+						mesh, beforeMerge, "merge_iter" + std::to_string(iter), dumpDir, maxFrac)) {
+					std::cerr << "tailorADC abort: excessive Euclidean edge after merge at iter "
+							  << iter << "\n";
+					restoreBest();
+					break;
+				}
+			}
 			// Clean up isolated vertices
 			{
 				mesh.request_vertex_status();
@@ -661,6 +703,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it)
 				savedPos[static_cast<std::size_t>((*v_it).idx())] = mesh.point(*v_it);
 
+			PeriodicTriMesh beforeStep = mesh;
 			for (int ls = 0; ls < 15; ++ls) {
 				// Trial displacement
 				for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
@@ -685,6 +728,13 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				if (ls >= 10)
 					break; // give up, keep original positions
 				step *= 0.7;
+			}
+			if (!PeriodicTriMesh::validateEuclideanEdgesOrDump(
+					mesh, beforeStep, "step_iter" + std::to_string(iter), dumpDir, maxFrac)) {
+				std::cerr << "tailorADC abort: excessive Euclidean edge after displacement at iter "
+						  << iter << "\n";
+				restoreBest();
+				break;
 			}
 		}
 

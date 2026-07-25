@@ -461,7 +461,11 @@ int cmdOptimize(const std::string& input,
 
 		for (int iter = 0; iter < maxIter; ++iter) {
 			if (iter > 0) {
-				xtpms::delaunayRemesh(mesh, remeshOpts);
+				if (!xtpms::delaunayRemesh(mesh, remeshOpts)) {
+					std::cerr << "optimize abort: remesh excessive Euclidean edge at iter " << iter
+							  << "\n";
+					break;
+				}
 				bool hasBnd = false;
 				for (auto e = mesh.edges_begin(); e != mesh.edges_end() && !hasBnd; ++e)
 					if (mesh.is_boundary(*e))

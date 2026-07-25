@@ -32,6 +32,7 @@
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/Polygon_mesh_processing/triangulate_hole.h>
 #include <CGAL/Polygon_mesh_processing/border.h>
+#include <CGAL/Polygon_mesh_processing/refine.h>
 
 #include <igl/cotmatrix.h>
 #include <igl/massmatrix.h>
@@ -1314,6 +1315,64 @@ void PeriodicTriMesh::periodShift() {
 	}
 }
 
+bool PeriodicTriMesh::findExcessiveEuclideanEdge(double maxFracOfMinPeriod,
+												 ExcessiveEuclideanEdge* out) const {
+	const double L0 = 2.0 * static_cast<double>(halfPeriod_[0]);
+	const double L1 = 2.0 * static_cast<double>(halfPeriod_[1]);
+	const double L2 = 2.0 * static_cast<double>(halfPeriod_[2]);
+	const double minPeriod = std::min({L0, L1, L2});
+	const double threshold = maxFracOfMinPeriod * minPeriod;
+	if (!(threshold > 0.0))
+		return false;
+
+	for (auto e = this->edges_begin(); e != this->edges_end(); ++e) {
+		if (this->status(*e).deleted())
+			continue;
+		HalfedgeHandle he = this->halfedge_handle(*e, 0);
+		const Vec3d& p0 = this->point(this->from_vertex_handle(he));
+		const Vec3d& p1 = this->point(this->to_vertex_handle(he));
+		// Minimum-image edge: wrap each component into one period before measuring length.
+		const double len = wrapVector(p1 - p0).norm();
+		if (len > threshold) {
+			if (out) {
+				out->edgeIdx = (*e).idx();
+				out->v0 = this->from_vertex_handle(he).idx();
+				out->v1 = this->to_vertex_handle(he).idx();
+				out->length = len;
+				out->threshold = threshold;
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+bool PeriodicTriMesh::validateEuclideanEdgesOrDump(PeriodicTriMesh& after,
+												   const PeriodicTriMesh& before,
+												   const std::string& opTag,
+												   const std::string& dumpDir,
+												   double maxFracOfMinPeriod) {
+	after.request_edge_status();
+	after.periodShift();
+	ExcessiveEuclideanEdge bad;
+	if (!after.findExcessiveEuclideanEdge(maxFracOfMinPeriod, &bad))
+		return true;
+
+	const std::string dir = dumpDir.empty() ? std::string(".") : dumpDir;
+	const std::string beforePath = dir + "/longedge_before_" + opTag + ".obj";
+	const std::string afterPath = dir + "/longedge_after_" + opTag + ".obj";
+	before.saveUnitCell(beforePath, /*split=*/false);
+	after.saveUnitCell(afterPath, /*split=*/false);
+
+	std::cerr << "[mesh] FATAL: periodic edge too long after '" << opTag << "': "
+			  << "edge=" << bad.edgeIdx << " v=(" << bad.v0 << "," << bad.v1 << ") "
+			  << "len=" << bad.length << " > threshold=" << bad.threshold
+			  << " (frac=" << maxFracOfMinPeriod << " * minPeriod, wrapped)\n"
+			  << "  dumped before: " << beforePath << "\n"
+			  << "  dumped after:  " << afterPath << "\n";
+	return false;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // splitUnitCell (aligned with minsurf split_unit_cell)
 // Find edges crossing periodic boundaries and split them at boundary faces
@@ -2108,6 +2167,23 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPr
 				std::cerr << "[surgery] CGAL fill made no progress len=" << bestLen
 						  << " pf=" << pf.size() << "\n";
 			} else if (fillFail == 0) {
+				// triangulate_hole spans wide holes with chords far longer than the surrounding
+				// edges, which both trips the long-edge guard and distorts the bilaplacian
+				// fairing below. Refine the patch to the rim edge length; the region border is
+				// the OM hole loop and is preserved, so writeback stays manifold.
+				try {
+					std::vector<CGALMesh::Face_index> refFaces;
+					std::vector<CGALMesh::Vertex_index> refVerts;
+					PMP::refine(cmesh,
+								pf,
+								std::back_inserter(refFaces),
+								std::back_inserter(refVerts),
+								CGAL::parameters::density_control_factor(std::sqrt(2.0)));
+					pf.insert(pf.end(), refFaces.begin(), refFaces.end());
+				} catch (...) {
+					std::cerr << "[surgery] CGAL refine failed len=" << bestLen
+							  << ", keeping coarse patch\n";
+				}
 				patchFacesCgal.insert(patchFacesCgal.end(), pf.begin(), pf.end());
 				++filledCount;
 			}

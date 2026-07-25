@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cmath>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -175,6 +176,26 @@ public:
 	// Topological surgery: detect neck singularities (high curvature), remove surrounding faces,
 	// fill holes, and remove islands. Returns true if surgery was performed.
 	bool surgery(const SurgeryOptions& opts = SurgeryOptions{});
+
+	// After periodShift, edge length is the minimum-image (periodically wrapped) length.
+	// Edges longer than maxFracOfMinPeriod * min(2*hp_i) indicate a bad mesh operation.
+	struct ExcessiveEuclideanEdge {
+		int edgeIdx{-1};
+		int v0{-1};
+		int v1{-1};
+		double length{0.0};
+		double threshold{0.0};
+	};
+	bool findExcessiveEuclideanEdge(double maxFracOfMinPeriod = 0.3,
+									ExcessiveEuclideanEdge* out = nullptr) const;
+
+	// periodShift, then check periodic (wrapped) edge lengths. On failure dump before/after OBJs
+	// and return false.
+	static bool validateEuclideanEdgesOrDump(PeriodicTriMesh& after,
+											 const PeriodicTriMesh& before,
+											 const std::string& opTag,
+											 const std::string& dumpDir,
+											 double maxFracOfMinPeriod = 0.3);
 
 private:
 	Vec3d halfPeriod_{};

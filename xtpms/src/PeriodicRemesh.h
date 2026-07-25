@@ -16,6 +16,10 @@ struct RemeshOptions {
 								// L_target = flatLen * eps / (sqrt(|K_total|) + eps)
 								// K_total = 4H² - 2K
 	std::string debugOutputDir; // if non-empty, output the mesh at each sub-step
+	// On excessively long Euclidean edges after periodShift, dump before/after and abort.
+	// Empty → current directory.
+	std::string failureDumpDir;
+	double maxEuclideanEdgeFracOfMinPeriod{0.3};
 };
 
 // Generate recommended remesh parameters based on the period size
@@ -34,8 +38,10 @@ inline RemeshOptions defaultRemeshOptions(const PeriodicTriMesh& mesh) {
 	return opts;
 }
 
-// Periodic Delaunay remesh: adjustEdgeLengths + fixDelaunay + smoothByCircumcenter
-void delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts = RemeshOptions{});
+// Periodic Delaunay remesh: adjustEdgeLengths + fixDelaunay + smoothByCircumcenter.
+// Returns false if an excessively long Euclidean edge is detected after periodShift
+// (before/after meshes dumped when failureDumpDir / debugOutputDir / cwd is writable).
+bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts = RemeshOptions{});
 
 // Intrinsic Delaunay: iteratively flip non-Delaunay interior edges (vertices fixed).
 // Returns the number of flips performed. Used before curvature / singularity measure.

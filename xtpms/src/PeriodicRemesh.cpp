@@ -271,7 +271,7 @@ bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	const bool dbg = !opts.debugOutputDir.empty();
 	auto dbgSave = [&](const std::string& tag) {
 		if (dbg)
-			mesh.saveUnitCell(opts.debugOutputDir + "/remesh_" + tag + ".obj");
+			mesh.saveUnitCell(opts.debugOutputDir + "/remesh_" + tag + ".obj", /*split=*/false);
 	};
 
 	dbgSave("0_input");

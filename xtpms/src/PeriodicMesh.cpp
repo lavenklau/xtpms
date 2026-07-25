@@ -1570,10 +1570,37 @@ void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
 // saveUnitCell / saveSplitUnitCellWithSingularity
 // ──────────────────────────────────────────────────────────────────────────
 
+namespace {
+
+// Temporary debug hook: fixed name beside the intended split output so a crash
+// inside splitUnitCell still leaves the pre-split mesh on disk for batch triage.
+std::string befsplitPathBeside(const std::string& filename) {
+	const auto pos = filename.find_last_of("/\\");
+	if (pos == std::string::npos)
+		return "befsplit.obj";
+	return filename.substr(0, pos + 1) + "befsplit.obj";
+}
+
+bool writeBefsplitObj(const PeriodicTriMesh& src, const std::string& besidePath) {
+	PeriodicTriMesh pre = src;
+	pre.periodShift();
+	const std::string path = befsplitPathBeside(besidePath);
+	const bool ok = OpenMesh::IO::write_mesh(pre, path);
+	if (ok)
+		std::cerr << "[saveUnitCell] wrote " << path << " (pre-split)\n";
+	else
+		std::cerr << "[saveUnitCell] failed to write " << path << " (pre-split)\n";
+	return ok;
+}
+
+} // namespace
+
 bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPath,
 													   const std::string& singularityPath,
 													   int surgeryType,
 													   bool splitEdges) const {
+	writeBefsplitObj(*this, objPath);
+
 	PeriodicTriMesh mesh = *this;
 	std::vector<double> curv = computeSingularityMeasure(mesh, surgeryType);
 
@@ -1808,6 +1835,8 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 
 bool PeriodicTriMesh::saveUnitCell(const std::string& filename, bool split, bool splitEdges) const {
 	if (split) {
+		// Dump unsplit mesh first so a splitUnitCell crash still leaves a triage OBJ.
+		writeBefsplitObj(*this, filename);
 		// Copy the mesh, then write out directly after splitUnitCell
 		PeriodicTriMesh copy = *this;
 		copy.splitUnitCell(splitEdges);

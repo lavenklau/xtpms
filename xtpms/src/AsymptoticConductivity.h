@@ -117,10 +117,11 @@ struct TailorADCOptions {
 
 	int nfLimit{100000}; // face count limit (abort if exceeded), <= 0 means no limit
 
-	std::string outputDir; // output intermediate results when non-empty
+	std::string outputDir; // output directory for intermediates / logs / final.obj when non-empty
 	int saveInterval{50};  // save every N iterations
 
 	// Log per-vertex mean curvature H = |Hv|/(2 As) every N iters after remesh; 0 = off.
+	// Written under outputDir (or "." if outputDir is empty).
 	int logMeanCurvatureInterval{0};
 };
 

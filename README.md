@@ -83,34 +83,38 @@ xtpms sample --random --kmax 2 --decay 2.0 -o random.obj
 ### Generate TPMS from seed (optimize with default settings)
 
 ```bash
-xtpms generate -i seed.obj -o tpms.obj --half-period 1,1,1 --max-iter 100
+xtpms generate -i seed.obj -o ./out --half-period 1,1,1 --max-iter 100
+# writes ./out/final.obj (and intermediate dumps under ./out/)
 ```
 
 `generate` is an alias for `optimize --objective apac` with surgery enabled by default.
+Omit `-i` to sample a random triperiodic seed in memory.
 
 ### Optimize with full control
 
 ```bash
 # Maximize APAC (default)
-xtpms optimize -i mesh.obj -o result.obj --half-period 1,1,1 --max-iter 100
+xtpms optimize -i mesh.obj -o ./out --half-period 1,1,1 --max-iter 100
 
 # Maximize k11 (x-direction conductivity)
-xtpms optimize -i mesh.obj -o result.obj --objective k11
+xtpms optimize -i mesh.obj -o ./out --objective k11
 
 # Custom expression objective
-xtpms optimize -i mesh.obj -o result.obj --objective "(k00-k11)^2+(k11-k22)^2"
+xtpms optimize -i mesh.obj -o ./out --objective "(k00-k11)^2+(k11-k22)^2"
 
 # Tune optimization parameters
-xtpms optimize -i mesh.obj -o result.obj \
+xtpms optimize -i mesh.obj -o ./iterations \
     --max-step 1.0 \
     --mcf-weight 0.1 \
     --adaptive-eps 1.0 \
     --surgery-tol 25 \
     --surgery-interval 4 \
     --nf-limit 100000 \
-    --output-dir ./iterations
+    --log-mean-curvature 2
 ```
 
+`-o` / `--output-dir` is a single output directory: `final.obj`, `iter_*.obj`,
+`aftsur_*.obj`, and optional `mean_curvature_*.txt` are all written there.
 ### Compute effective conductivity
 
 ```bash

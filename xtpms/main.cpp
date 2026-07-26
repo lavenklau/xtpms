@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <sstream>
 #include <cmath>
+#include <filesystem>
 #include <random>
 
 #include "PeriodicMesh.h"
@@ -405,7 +406,7 @@ int cmdCompute(const std::string& input, const std::string& hpStr) {
 // ──────────────────────────────────────────────────────────
 
 int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
-				const std::string& output,
+				const std::string& outputDir,
 				const std::string& objective,
 				int maxIter,
 				double maxStep,
@@ -419,9 +420,21 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 				int nfLimit,
 				double convergeTol,
 				bool noSplit,
-				const std::string& outputDir,
 				int logMeanCurvatureInterval) {
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
+	std::cout << "Output dir: " << outputDir << "\n";
+
+	{
+		std::error_code ec;
+		std::filesystem::create_directories(outputDir, ec);
+		if (ec) {
+			std::cerr << "Error: cannot create output dir '" << outputDir << "': " << ec.message()
+					  << "\n";
+			return 1;
+		}
+	}
+
+	const std::string finalPath = outputDir + "/final.obj";
 
 	bool isBuiltin = (objective == "apac" || objective == "k00" || objective == "k11" ||
 					  objective == "k22" || objective == "iso");
@@ -443,9 +456,8 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 		opts.surgeryOpts.singularityTol = surgeryTol;
 		opts.surgeryOpts.surgeryType = 2;
 		opts.outputDir = outputDir;
+		opts.saveInterval = 1;
 		opts.logMeanCurvatureInterval = logMeanCurvatureInterval;
-		if (!outputDir.empty())
-			opts.saveInterval = 1;
 		xtpms::tailorADC(mesh, opts);
 	} else {
 		// Custom expression objective
@@ -477,9 +489,8 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 			int nv = static_cast<int>(mesh.n_vertices());
 
 			if (logMeanCurvatureInterval > 0 && iter % logMeanCurvatureInterval == 0) {
-				const std::string dumpDir = outputDir.empty() ? std::string(".") : outputDir;
 				const std::string path =
-					dumpDir + "/mean_curvature_" + std::to_string(iter) + ".txt";
+					outputDir + "/mean_curvature_" + std::to_string(iter) + ".txt";
 				std::ofstream out(path);
 				if (!out) {
 					std::cerr << "[optimize] failed to write " << path << "\n";
@@ -539,8 +550,7 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 			std::cout << "iter=" << iter << " obj=" << objVal << " nv=" << nv
 					  << " nf=" << mesh.n_faces() << "\n";
 
-			if (!outputDir.empty())
-				mesh.saveUnitCell(outputDir + "/iter_" + std::to_string(iter) + ".obj");
+			mesh.saveUnitCell(outputDir + "/iter_" + std::to_string(iter) + ".obj");
 		}
 	}
 
@@ -549,8 +559,8 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
 	std::cout << "\nFinal kA =\n" << kA << "\n";
 	std::cout << "APAC = " << kA.trace() / 3.0 << "\n";
-	saveMesh(mesh, output, noSplit);
-	std::cout << "Saved: " << output << "\n";
+	saveMesh(mesh, finalPath, noSplit);
+	std::cout << "Saved: " << finalPath << "\n";
 	return 0;
 }
 
@@ -899,7 +909,7 @@ int main(int argc, char** argv) {
 	auto* cmdO = app.add_subcommand("optimize", "Optimize surface conductivity");
 	auto* cmdG = app.add_subcommand(
 		"generate", "Alias for optimize --objective apac (random seed if -i omitted)");
-	std::string o_in, o_out, o_obj = "apac", o_dir;
+	std::string o_in, o_dir, o_obj = "apac";
 	int o_iter = 100;
 	double o_step = 1.0, o_mcf = 0.1, o_prec = 0.1;
 	bool o_nosurg = false, o_nosplit = false;
@@ -914,7 +924,10 @@ int main(int argc, char** argv) {
 					 o_in,
 					 "Seed mesh (OBJ/STL/PLY/OFF); omit to sample a random triperiodic seed");
 	for (auto* cmd : {cmdO, cmdG}) {
-		cmd->add_option("-o,--output", o_out, "Output OBJ")->required();
+		cmd->add_option("-o,--output-dir",
+						o_dir,
+						"Output directory (final.obj, iter_*.obj, mean_curvature_*.txt, ...)")
+			->required();
 		cmd->add_option("--half-period", hpStr);
 		cmd->add_option("--max-iter", o_iter)->default_val(100);
 		cmd->add_option("--max-step", o_step)->default_val(1.0);
@@ -930,7 +943,6 @@ int main(int argc, char** argv) {
 			->default_val(100000);
 		cmd->add_option("--converge-tol", o_ctol)->default_val(1e-3);
 		cmd->add_flag("--no-split", o_nosplit);
-		cmd->add_option("--output-dir", o_dir, "Save intermediate meshes");
 		cmd->add_option("--log-mean-curvature",
 						o_logH,
 						"Dump per-vertex mean curvature H every N iters after remesh (0=off)")
@@ -995,7 +1007,7 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 		return cmdOptimize(mesh,
-						   o_out,
+						   o_dir,
 						   o_obj,
 						   o_iter,
 						   o_step,
@@ -1009,7 +1021,6 @@ int main(int argc, char** argv) {
 						   o_nfLimit,
 						   o_ctol,
 						   o_nosplit,
-						   o_dir,
 						   o_logH);
 	}
 	if (cmdS->parsed())

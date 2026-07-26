@@ -2,6 +2,7 @@
 #include <OpenMesh/Core/IO/MeshIO.hh>
 #include <iostream>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <cmath>
 #include <random>
@@ -403,9 +404,8 @@ int cmdCompute(const std::string& input, const std::string& hpStr) {
 // Subcommand: optimize
 // ──────────────────────────────────────────────────────────
 
-int cmdOptimize(const std::string& input,
+int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 				const std::string& output,
-				const std::string& hpStr,
 				const std::string& objective,
 				int maxIter,
 				double maxStep,
@@ -419,10 +419,8 @@ int cmdOptimize(const std::string& input,
 				int nfLimit,
 				double convergeTol,
 				bool noSplit,
-				const std::string& outputDir) {
-	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, hpStr))
-		return 1;
+				const std::string& outputDir,
+				int logMeanCurvatureInterval) {
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 
 	bool isBuiltin = (objective == "apac" || objective == "k00" || objective == "k11" ||
@@ -445,6 +443,7 @@ int cmdOptimize(const std::string& input,
 		opts.surgeryOpts.singularityTol = surgeryTol;
 		opts.surgeryOpts.surgeryType = 2;
 		opts.outputDir = outputDir;
+		opts.logMeanCurvatureInterval = logMeanCurvatureInterval;
 		if (!outputDir.empty())
 			opts.saveInterval = 1;
 		xtpms::tailorADC(mesh, opts);
@@ -476,6 +475,22 @@ int cmdOptimize(const std::string& input,
 
 			auto geom = xtpms::computeVertexGeometry(mesh);
 			int nv = static_cast<int>(mesh.n_vertices());
+
+			if (logMeanCurvatureInterval > 0 && iter % logMeanCurvatureInterval == 0) {
+				const std::string dumpDir = outputDir.empty() ? std::string(".") : outputDir;
+				const std::string path =
+					dumpDir + "/mean_curvature_" + std::to_string(iter) + ".txt";
+				std::ofstream out(path);
+				if (!out) {
+					std::cerr << "[optimize] failed to write " << path << "\n";
+				} else {
+					out << std::setprecision(17);
+					for (int i = 0; i < nv; ++i)
+						out << geom.vrings[static_cast<std::size_t>(i)].H << "\n";
+					std::cout << "[optimize] wrote " << path << " (nv=" << nv << ")\n";
+				}
+			}
+
 			Eigen::MatrixX3d ulist;
 			Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
 			exprObj.setKA(kA);
@@ -709,6 +724,60 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 	return mesh;
 }
 
+// Random triperiodic Fourier isosurface → closed periodic seed mesh (same as sample --random).
+static bool makeRandomPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
+								   const Vec3d& hp,
+								   int resolution,
+								   int kmax,
+								   double decay) {
+	const double Lx = 2.0 * hp[0], Ly = 2.0 * hp[1], Lz = 2.0 * hp[2];
+
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::uniform_real_distribution<double> dist(-1.0, 1.0);
+
+	struct FourierTerm {
+		int k[3];
+		double c, s;
+	};
+	std::vector<FourierTerm> terms;
+	for (int k0 = -kmax; k0 <= kmax; ++k0)
+		for (int k1 = -kmax; k1 <= kmax; ++k1)
+			for (int k2 = -kmax; k2 <= kmax; ++k2) {
+				if (k0 == 0 && k1 == 0 && k2 == 0)
+					continue;
+				double knorm = std::sqrt(static_cast<double>(k0 * k0 + k1 * k1 + k2 * k2));
+				double weight = 1.0 / std::pow(knorm, decay);
+				terms.push_back({{k0, k1, k2}, dist(gen) * weight, dist(gen) * weight});
+			}
+
+	std::cout << "Random Fourier series: " << terms.size() << " terms, kmax=" << kmax
+			  << ", decay=" << decay << "\n";
+
+	auto levelSet = [=](double x, double y, double z) {
+		double w[3] = {2 * M_PI * x / Lx, 2 * M_PI * y / Ly, 2 * M_PI * z / Lz};
+		double val = 0;
+		for (const auto& t : terms) {
+			double phase = t.k[0] * w[0] + t.k[1] * w[1] + t.k[2] * w[2];
+			val += t.c * cos(phase) + t.s * sin(phase);
+		}
+		return val;
+	};
+
+	auto src = marchingCubesFromLevelSet(levelSet, hp, resolution);
+	std::cout << "Isosurface: nv=" << src.n_vertices() << " nf=" << src.n_faces() << "\n";
+	if (src.n_faces() == 0) {
+		std::cerr << "Error: random sample produced empty isosurface "
+					 "(try different resolution / kmax)\n";
+		return false;
+	}
+
+	mesh = periodizeMesh(src, hp);
+	std::cout << "Periodized seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
+			  << " half-period=" << hp[0] << "," << hp[1] << "," << hp[2] << "\n";
+	return mesh.n_faces() > 0;
+}
+
 // Built-in level set functions
 static std::function<double(double, double, double)>
 getBuiltinLevelSet(const std::string& type, double Lx, double Ly, double Lz) {
@@ -749,76 +818,44 @@ int cmdSample(const std::string& expression,
 	std::function<double(double, double, double)> levelSet;
 
 	if (randomMode) {
-		// Random triperiodic Fourier series:
-		// f(x,y,z) = Σ_k [ c_k cos(k·ω) + s_k sin(k·ω) ]
-		// where ω = (2πx/Lx, 2πy/Ly, 2πz/Lz), k = (k1,k2,k3), |ki| ≤ kmax
-		// Coefficients decay as 1/|k|^decay to ensure smoothness
-		// kmax and decay are now parameters
+		xtpms::PeriodicTriMesh mesh;
+		if (!makeRandomPeriodicMesh(mesh, hp, resolution, kmax, decay))
+			return 1;
+		saveMesh(mesh, output, noSplit);
+		std::cout << "Saved: " << output << "\n";
+		return 0;
+	}
 
-		std::random_device rd;
-		std::mt19937 gen(rd());
-		std::uniform_real_distribution<double> dist(-1.0, 1.0);
-
-		// Enumerate all frequency vectors and generate coefficients
-		struct FourierTerm {
-			int k[3];
-			double c, s;
+	// Try built-in name first
+	levelSet = getBuiltinLevelSet(expression, Lx, Ly, Lz);
+	if (!levelSet) {
+		// Parse as tinyexpr expression with variables x, y, z
+		// Expression assumes 2π-periodic: e.g. cos(x)+cos(y)+cos(z)
+		// Auto-scale: x_expr = 2π * x_physical / period
+		double vx = 0, vy = 0, vz = 0;
+		double pi_val = M_PI;
+		te_variable vars[] = {
+			{"x", &vx},
+			{"y", &vy},
+			{"z", &vz},
+			{"pi", &pi_val},
 		};
-		std::vector<FourierTerm> terms;
-		for (int k0 = -kmax; k0 <= kmax; ++k0)
-			for (int k1 = -kmax; k1 <= kmax; ++k1)
-				for (int k2 = -kmax; k2 <= kmax; ++k2) {
-					if (k0 == 0 && k1 == 0 && k2 == 0)
-						continue; // skip DC
-					double knorm = std::sqrt(k0 * k0 + k1 * k1 + k2 * k2);
-					double weight = 1.0 / std::pow(knorm, decay);
-					terms.push_back({{k0, k1, k2}, dist(gen) * weight, dist(gen) * weight});
-				}
-
-		std::cout << "Random Fourier series: " << terms.size() << " terms, kmax=" << kmax
-				  << ", decay=" << decay << "\n";
-
-		levelSet = [=](double x, double y, double z) {
-			double w[3] = {2 * M_PI * x / Lx, 2 * M_PI * y / Ly, 2 * M_PI * z / Lz};
-			double val = 0;
-			for (const auto& t : terms) {
-				double phase = t.k[0] * w[0] + t.k[1] * w[1] + t.k[2] * w[2];
-				val += t.c * cos(phase) + t.s * sin(phase);
-			}
-			return val;
-		};
-	} else {
-		// Try built-in name first
-		levelSet = getBuiltinLevelSet(expression, Lx, Ly, Lz);
-		if (!levelSet) {
-			// Parse as tinyexpr expression with variables x, y, z
-			// Expression assumes 2π-periodic: e.g. cos(x)+cos(y)+cos(z)
-			// Auto-scale: x_expr = 2π * x_physical / period
-			double vx = 0, vy = 0, vz = 0;
-			double pi_val = M_PI;
-			te_variable vars[] = {
-				{"x", &vx},
-				{"y", &vy},
-				{"z", &vz},
-				{"pi", &pi_val},
-			};
-			int err = 0;
-			te_expr* compiled = te_compile(expression.c_str(), vars, 4, &err);
-			if (!compiled) {
-				std::cerr << "Error: cannot parse expression '" << expression << "' at position "
-						  << err << "\n";
-				return 1;
-			}
-			levelSet = [compiled, &vx, &vy, &vz, Lx, Ly, Lz](double x, double y, double z) mutable {
-				// Scale physical [0, L] → expression [0, 2π]
-				vx = 2 * M_PI * x / Lx;
-				vy = 2 * M_PI * y / Ly;
-				vz = 2 * M_PI * z / Lz;
-				return te_eval(compiled);
-			};
-			std::cout << "Expression: " << expression << " (2pi-periodic, scaled to period " << Lx
-					  << "x" << Ly << "x" << Lz << ")\n";
+		int err = 0;
+		te_expr* compiled = te_compile(expression.c_str(), vars, 4, &err);
+		if (!compiled) {
+			std::cerr << "Error: cannot parse expression '" << expression << "' at position "
+					  << err << "\n";
+			return 1;
 		}
+		levelSet = [compiled, &vx, &vy, &vz, Lx, Ly, Lz](double x, double y, double z) mutable {
+			// Scale physical [0, L] → expression [0, 2π]
+			vx = 2 * M_PI * x / Lx;
+			vy = 2 * M_PI * y / Ly;
+			vz = 2 * M_PI * z / Lz;
+			return te_eval(compiled);
+		};
+		std::cout << "Expression: " << expression << " (2pi-periodic, scaled to period " << Lx
+				  << "x" << Ly << "x" << Lz << ")\n";
 	}
 
 	auto src = marchingCubesFromLevelSet(levelSet, hp, resolution);
@@ -863,17 +900,23 @@ int main(int argc, char** argv) {
 
 	// ── optimize (also aliased as "generate") ──
 	auto* cmdO = app.add_subcommand("optimize", "Optimize surface conductivity");
-	auto* cmdG = app.add_subcommand("generate", "Alias for optimize --objective apac");
+	auto* cmdG = app.add_subcommand(
+		"generate", "Alias for optimize --objective apac (random seed if -i omitted)");
 	std::string o_in, o_out, o_obj = "apac", o_dir;
 	int o_iter = 100;
 	double o_step = 1.0, o_mcf = 0.1, o_prec = 0.1;
 	bool o_nosurg = false, o_nosplit = false;
-	int o_surgStart = 0, o_surgInt = 4, o_nfLimit = 100000;
+	int o_surgStart = 0, o_surgInt = 4, o_nfLimit = 100000, o_logH = 0;
 	double o_surgTol = 25.0, o_ctol = 1e-3, o_aeps = 1.0;
+	int o_seedRes = 20, o_seedKmax = 2;
+	double o_seedDecay = 2.0;
 	cmdO->add_option("--objective", o_obj, "apac|k00|k11|k22|iso or expression")
 		->default_val("apac");
+	cmdO->add_option("-i,--input", o_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
+	cmdG->add_option("-i,--input",
+					 o_in,
+					 "Seed mesh (OBJ/STL/PLY/OFF); omit to sample a random triperiodic seed");
 	for (auto* cmd : {cmdO, cmdG}) {
-		cmd->add_option("-i,--input", o_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 		cmd->add_option("-o,--output", o_out, "Output OBJ")->required();
 		cmd->add_option("--half-period", hpStr);
 		cmd->add_option("--max-iter", o_iter)->default_val(100);
@@ -891,7 +934,17 @@ int main(int argc, char** argv) {
 		cmd->add_option("--converge-tol", o_ctol)->default_val(1e-3);
 		cmd->add_flag("--no-split", o_nosplit);
 		cmd->add_option("--output-dir", o_dir, "Save intermediate meshes");
+		cmd->add_option("--log-mean-curvature",
+						o_logH,
+						"Dump per-vertex mean curvature H every N iters after remesh (0=off)")
+			->default_val(0);
 	}
+	// Random-seed controls (used when generate omits -i)
+	cmdG->add_option("-r,--resolution", o_seedRes, "MC resolution for random seed")
+		->default_val(20);
+	cmdG->add_option("--kmax", o_seedKmax, "Max Fourier frequency for random seed")->default_val(2);
+	cmdG->add_option("--decay", o_seedDecay, "Fourier coefficient decay for random seed")
+		->default_val(2.0);
 
 	// ── sample ──
 	auto* cmdS = app.add_subcommand("sample", "Sample isosurface from level set expression");
@@ -933,9 +986,19 @@ int main(int argc, char** argv) {
 	if (cmdO->parsed() || cmdG->parsed()) {
 		if (cmdG->parsed())
 			o_obj = "apac"; // generate always uses apac objective
-		return cmdOptimize(o_in,
+		xtpms::PeriodicTriMesh mesh;
+		if (o_in.empty()) {
+			Vec3d hp = (hpStr.empty() || hpStr == "auto") ? parseVec3("1,1,1") : parseVec3(hpStr);
+			std::cout << "No seed mesh given; sampling random triperiodic surface "
+						 "(half-period "
+					  << hp[0] << "," << hp[1] << "," << hp[2] << ")\n";
+			if (!makeRandomPeriodicMesh(mesh, hp, o_seedRes, o_seedKmax, o_seedDecay))
+				return 1;
+		} else if (!loadPeriodicMesh(mesh, o_in, hpStr)) {
+			return 1;
+		}
+		return cmdOptimize(mesh,
 						   o_out,
-						   hpStr,
 						   o_obj,
 						   o_iter,
 						   o_step,
@@ -949,7 +1012,8 @@ int main(int argc, char** argv) {
 						   o_nfLimit,
 						   o_ctol,
 						   o_nosplit,
-						   o_dir);
+						   o_dir,
+						   o_logH);
 	}
 	if (cmdS->parsed())
 		return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random, s_kmax, s_decay);

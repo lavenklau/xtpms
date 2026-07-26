@@ -2,6 +2,8 @@
 
 #include <Eigen/SparseCholesky>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <numeric>
 #include <string>
@@ -565,6 +567,22 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		// [4] geometry
 		auto geom = computeVertexGeometry(mesh);
 		const int nv = static_cast<int>(mesh.n_vertices());
+
+		// [4.5] optional mean-curvature dump (after remesh; H already / 1-ring area)
+		if (opts.logMeanCurvatureInterval > 0 &&
+			iter % opts.logMeanCurvatureInterval == 0) {
+			const std::string path =
+				dumpDir + "/mean_curvature_" + std::to_string(iter) + ".txt";
+			std::ofstream out(path);
+			if (!out) {
+				std::cerr << "[tailorADC] failed to write " << path << "\n";
+			} else {
+				out << std::setprecision(17);
+				for (int i = 0; i < nv; ++i)
+					out << geom.vrings[static_cast<std::size_t>(i)].H << "\n";
+				std::cout << "[tailorADC] wrote " << path << " (nv=" << nv << ")\n";
+			}
+		}
 
 		// [5] solve ADC
 		Eigen::MatrixX3d ulist;

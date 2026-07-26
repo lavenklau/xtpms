@@ -119,6 +119,9 @@ struct TailorADCOptions {
 
 	std::string outputDir; // output intermediate results when non-empty
 	int saveInterval{50};  // save every N iterations
+
+	// Log per-vertex mean curvature H = |Hv|/(2 As) every N iters after remesh; 0 = off.
+	int logMeanCurvatureInterval{0};
 };
 
 // ADC shape optimization main loop

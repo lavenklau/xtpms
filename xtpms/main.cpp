@@ -725,11 +725,8 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 }
 
 // Random triperiodic Fourier isosurface → closed periodic seed mesh (same as sample --random).
-static bool makeRandomPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
-								   const Vec3d& hp,
-								   int resolution,
-								   int kmax,
-								   double decay) {
+static bool makeRandomPeriodicMesh(
+	xtpms::PeriodicTriMesh& mesh, const Vec3d& hp, int resolution, int kmax, double decay) {
 	const double Lx = 2.0 * hp[0], Ly = 2.0 * hp[1], Lz = 2.0 * hp[2];
 
 	std::random_device rd;
@@ -843,8 +840,8 @@ int cmdSample(const std::string& expression,
 		int err = 0;
 		te_expr* compiled = te_compile(expression.c_str(), vars, 4, &err);
 		if (!compiled) {
-			std::cerr << "Error: cannot parse expression '" << expression << "' at position "
-					  << err << "\n";
+			std::cerr << "Error: cannot parse expression '" << expression << "' at position " << err
+					  << "\n";
 			return 1;
 		}
 		levelSet = [compiled, &vx, &vy, &vz, Lx, Ly, Lz](double x, double y, double z) mutable {

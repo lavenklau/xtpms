@@ -569,10 +569,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		const int nv = static_cast<int>(mesh.n_vertices());
 
 		// [4.5] optional mean-curvature dump (after remesh; H already / 1-ring area)
-		if (opts.logMeanCurvatureInterval > 0 &&
-			iter % opts.logMeanCurvatureInterval == 0) {
-			const std::string path =
-				dumpDir + "/mean_curvature_" + std::to_string(iter) + ".txt";
+		if (opts.logMeanCurvatureInterval > 0 && iter % opts.logMeanCurvatureInterval == 0) {
+			const std::string path = dumpDir + "/mean_curvature_" + std::to_string(iter) + ".txt";
 			std::ofstream out(path);
 			if (!out) {
 				std::cerr << "[tailorADC] failed to write " << path << "\n";

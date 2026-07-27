@@ -85,15 +85,12 @@ struct ConvergenceChecker {
 	int histSize = 50;
 	double objTol;
 	double stepTol;
-	double c0;
 	std::vector<double> objHistory;
 	std::vector<double> stepHistory;
 
-	ConvergenceChecker(double objTol_, double stepTol_, double c0_)
-		: objTol(objTol_), stepTol(stepTol_), c0(c0_) {}
+	ConvergenceChecker(double objTol_, double stepTol_) : objTol(objTol_), stepTol(stepTol_) {}
 
 	bool operator()(double obj, double step);
-	double estimatePrecondition(double cmax) const;
 	double estimateNextStep(double tmax) const;
 };
 
@@ -103,7 +100,8 @@ struct TailorADCOptions {
 	double convergeTol{1e-3};
 	double maxStep{0.3};
 	double stepTol{1e-3};
-	double preconditionStrength{0.1};
+	// Laplace weight c in G = A - c L (clamped to [0, 20] in tailorADC); larger → smoother steps
+	double preconditionStrength{1.0};
 	std::string objectiveType{"apac"};
 	double mcfWeight{0.1}; // mean curvature flow (area regularization) weight
 

@@ -1,6 +1,7 @@
 #include "AsymptoticConductivity.h"
 
 #include <Eigen/SparseCholesky>
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -363,10 +364,6 @@ bool ConvergenceChecker::operator()(double obj, double step) {
 	return false;
 }
 
-double ConvergenceChecker::estimatePrecondition(double cmax) const {
-	return std::min(cmax, c0);
-}
-
 double ConvergenceChecker::estimateNextStep(double tmax) const {
 	if (stepHistory.empty())
 		return tmax;
@@ -376,8 +373,7 @@ double ConvergenceChecker::estimateNextStep(double tmax) const {
 // ── tailorADC ─────────────────────────────────────────────
 
 void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
-	ConvergenceChecker conv(
-		opts.convergeTol, opts.stepTol * opts.maxStep, opts.preconditionStrength);
+	ConvergenceChecker conv(opts.convergeTol, opts.stepTol * opts.maxStep);
 
 	RemeshOptions remeshOpts = opts.remeshOpts;
 	if (opts.enableRemesh && remeshOpts.targetLength < 0) {
@@ -633,7 +629,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			(sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-obj.gradient);
 
 		// [9] preconditioned descent direction
-		double c = 1.0 / conv.estimatePrecondition(20.0);
+		// --precondition is the Laplace weight c in G = A - c L (larger → smoother).
+		const double c = std::clamp(opts.preconditionStrength, 0.0, 20.0);
 		auto L = assembleLaplacian(mesh, geom.cotWeights);
 		Eigen::SparseMatrix<double> G = -c * L;
 		for (int i = 0; i < nv; ++i)

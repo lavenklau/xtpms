@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <sstream>
 #include <cmath>
+#include <algorithm>
 #include <filesystem>
 #include <random>
 
@@ -523,12 +524,13 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 				(sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-grad6);
 
 			auto L = xtpms::assembleLaplacian(mesh, geom.cotWeights);
-			Eigen::SparseMatrix<double> G = -precondStrength * L;
+			const double c = std::clamp(precondStrength, 0.0, 20.0);
+			Eigen::SparseMatrix<double> G = -c * L;
 			for (int i = 0; i < nv; ++i)
 				G.coeffRef(i, i) += geom.vertexAreas[i];
 			Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(G);
-			Eigen::VectorXd dn = -solver.solve(
-				geom.vertexAreas.cwiseProduct((precondStrength + 1.0) * dfdvn).eval());
+			Eigen::VectorXd dn =
+				-solver.solve(geom.vertexAreas.cwiseProduct((c + 1.0) * dfdvn).eval());
 
 			for (auto v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
 				int vi = (*v).idx();
@@ -911,7 +913,7 @@ int main(int argc, char** argv) {
 		"generate", "Alias for optimize --objective apac (random seed if -i omitted)");
 	std::string o_in, o_dir, o_obj = "apac";
 	int o_iter = 100;
-	double o_step = 1.0, o_mcf = 0.1, o_prec = 0.1;
+	double o_step = 1.0, o_mcf = 0.1, o_prec = 1.0;
 	bool o_nosurg = false, o_nosplit = false;
 	int o_surgStart = 0, o_surgInt = 4, o_nfLimit = 100000, o_logH = 0;
 	double o_surgTol = 25.0, o_ctol = 1e-3, o_aeps = 1.0;
@@ -932,7 +934,10 @@ int main(int argc, char** argv) {
 		cmd->add_option("--max-iter", o_iter)->default_val(100);
 		cmd->add_option("--max-step", o_step)->default_val(1.0);
 		cmd->add_option("--mcf-weight", o_mcf)->default_val(0.1);
-		cmd->add_option("--precondition", o_prec)->default_val(0.1);
+		cmd->add_option("--precondition",
+						o_prec,
+						"Laplace weight c in G=A-cL (larger=smoother; clamped to [0,20])")
+			->default_val(1.0);
 		cmd->add_option("--adaptive-eps", o_aeps, "Curvature-adaptive remesh")->default_val(1.0);
 		cmd->add_flag("--no-surgery", o_nosurg, "Disable singularity surgery");
 		cmd->add_option("--surgery-start", o_surgStart, "First iter eligible for surgery")

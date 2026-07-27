@@ -2895,7 +2895,7 @@ TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
 	opts.maxStep = 0.3;
 	opts.convergeTol = 1e-5;
 	opts.stepTol = 1e-4;
-	opts.preconditionStrength = 0.1;
+	opts.preconditionStrength = 1.0;
 
 	opts.enableRemesh = true;
 	opts.remeshOpts.outerIter = 1;

@@ -2750,7 +2750,11 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 			}
 			flatLen = totalEdgeLen / edgeCnt;
 		}
-		double eps = 1.0 / opts.remeshOpts.adaptiveEps;
+		double epsDimless = 1.0 / opts.remeshOpts.adaptiveEps;
+		const auto hp = mesh.halfPeriod();
+		const double minHp = std::min(
+			{static_cast<double>(hp[0]), static_cast<double>(hp[1]), static_cast<double>(hp[2])});
+		double eps = epsDimless / minHp;
 		double minTarget = 1e30, maxTarget = 0, sumTarget = 0;
 		int edgeCnt2 = 0;
 		for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
@@ -2767,7 +2771,8 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 			sumTarget += L;
 			++edgeCnt2;
 		}
-		std::cout << "flatLen=" << flatLen << " eps=" << eps << "\n";
+		std::cout << "flatLen=" << flatLen << " minHalfPeriod=" << minHp
+				  << " epsDimless=" << epsDimless << " eps=" << eps << "\n";
 		std::cout << "adaptive target: min=" << minTarget << " max=" << maxTarget
 				  << " avg=" << sumTarget / edgeCnt2 << "\n";
 

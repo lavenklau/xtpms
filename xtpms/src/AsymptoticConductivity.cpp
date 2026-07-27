@@ -393,8 +393,16 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			remeshOpts.adaptiveEps = opts.remeshOpts.adaptiveEps;
 		remeshOpts.maxEuclideanEdgeFracOfMinPeriod = userFrac;
 		remeshOpts.failureDumpDir = userFailDir;
+		const auto hp = mesh.halfPeriod();
+		const double minHp = std::min(
+			{static_cast<double>(hp[0]), static_cast<double>(hp[1]), static_cast<double>(hp[2])});
+		const double eps = (remeshOpts.adaptiveEps > 0 && minHp > 1e-30)
+							   ? (1.0 / remeshOpts.adaptiveEps / minHp)
+							   : 0.0;
 		std::cout << "fixed remesh targetLength = " << remeshOpts.targetLength
-				  << " minLength = " << remeshOpts.minLength << "\n";
+				  << " minLength = " << remeshOpts.minLength
+				  << " adaptiveEps = " << remeshOpts.adaptiveEps << " minHalfPeriod = " << minHp
+				  << " eps = " << eps << "\n";
 	}
 
 	// Sanity check helper: nfLimit < 0 means no upper limit on face count

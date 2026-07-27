@@ -180,8 +180,9 @@ double estimateAvgEdgeLength(const PeriodicTriMesh& m) {
 	return (cnt > 0) ? total / cnt : 0.1;
 }
 
-// Curvature-adaptive target edge length (aligned exactly with minsurf findTotalCurvatureTargetL)
-// averageK = mean of (4H²-2K) at two endpoints
+// Curvature-adaptive target edge length (minsurf findTotalCurvatureTargetL, scale-normalized).
+// averageK = mean of (4H²-2K) at two endpoints; √|averageK| has dimension 1/length.
+// epsilon must share that dimension: eps = (1/adaptiveEps) / minHalfPeriod.
 // L = flatLen * eps / (fabs(sqrt(averageK)) + eps)
 double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh, double flatLength, double epsilon) {
 	const Vec3d hp = m.halfPeriod();
@@ -258,8 +259,14 @@ bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 	if (minLen < 0 || minLen > flatLen)
 		minLen = flatLen / 4.0;
 
-	const double adaptEps = (opts.adaptiveEps > 0) ? (1.0 / opts.adaptiveEps) : 0;
-	const bool useAdaptive = (adaptEps > 0);
+	// Scale-normalize the dimensionless adaptiveEps so eps matches curvature (1/length).
+	const Vec3d hp = mesh.halfPeriod();
+	const double minHalfPeriod = std::min(
+		{static_cast<double>(hp[0]), static_cast<double>(hp[1]), static_cast<double>(hp[2])});
+	const double adaptEpsDimless = (opts.adaptiveEps > 0) ? (1.0 / opts.adaptiveEps) : 0.0;
+	const double adaptEps =
+		(adaptEpsDimless > 0.0 && minHalfPeriod > 1e-30) ? (adaptEpsDimless / minHalfPeriod) : 0.0;
+	const bool useAdaptive = (adaptEps > 0.0);
 
 	// Target edge length per edge (adaptive or global)
 	auto edgeTargetLen = [&](EH eh) -> double {

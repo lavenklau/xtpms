@@ -12,9 +12,9 @@ struct RemeshOptions {
 	double collapseRatio{0.5};	// collapse edge when length < targetLen * collapseRatio
 	double minLength{-1.0};		// <0 means auto-set to targetLength/4
 	double adaptiveEps{0.6};	// curvature-adaptive parameter (>0 to enable)
-								// epsilon = 1/adaptiveEps
+								// eps = (1/adaptiveEps) / min(halfPeriod)
 								// L_target = flatLen * eps / (sqrt(|K_total|) + eps)
-								// K_total = 4H² - 2K
+								// K_total = 4H² - 2K  (same dimension as 1/length²)
 	std::string debugOutputDir; // if non-empty, output the mesh at each sub-step
 	// On excessively long Euclidean edges after periodShift, dump before/after and abort.
 	// Empty → current directory.

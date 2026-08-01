@@ -23,7 +23,8 @@
 #ifndef XTPMS_TEST_STL_PATH
 #define XTPMS_TEST_STL_PATH R"(tests/data/test_input.stl)"
 #endif
-// 周期配对率下限；默认 0 仅检查读写与 periodize 非空。需要回归时可于编译期定义为 0.85 等。
+// Minimum period-partner ratio; default 0 only checks I/O and non-empty periodize. Raise (e.g.
+// 0.85) for stricter regression.
 #ifndef XTPMS_TEST_STL_MIN_PARTNER_RATIO
 #define XTPMS_TEST_STL_MIN_PARTNER_RATIO 0.0
 #endif
@@ -230,10 +231,10 @@ TEST(PeriodicMeshPeriodize, OpenQuad_MergeNonEmpty) {
 }
 
 // ──────────────────────────────────────────────────────────
-// mergePeriodBoundary 单元测试
+// mergePeriodBoundary unit tests
 // ──────────────────────────────────────────────────────────
 
-// 通用 TPMS MC 生成器
+// Generic TPMS marching-cubes generator
 using LevelSetFunc = std::function<double(double, double, double)>;
 
 xtpms::DefaultTriMesh makeTPMSMC(const Vec3d& halfPeriod, const LevelSetFunc& func, int res = 24) {
@@ -321,14 +322,14 @@ int countBoundaryEdges(const xtpms::DefaultTriMesh& mesh) {
 }
 
 TEST(MergePeriodBoundary, GyroidEqualPeriod_NoBoundaryEdges) {
-	// Gyroid MC 输出 -> mergePeriodBoundary 后不应有边界边
+	// Gyroid MC output -> after mergePeriodBoundary there should be no boundary edges
 	const Vec3d hp(0.5, 0.5, 0.5);
 	xtpms::DefaultTriMesh src = makeGyroidMC(hp, 16);
 	ASSERT_GT(src.n_faces(), 0u);
 
 	xtpms::PeriodicTriMesh mesh;
 	mesh.setHalfPeriod(hp);
-	// 直接 assign src 到 mesh（不经过 periodizeFrom，测试纯 merge）
+	// Assign src directly to mesh (skip periodizeFrom; test merge only)
 	for (auto v_it = src.vertices_begin(); v_it != src.vertices_end(); ++v_it) {
 		mesh.add_vertex(src.point(*v_it));
 	}
@@ -344,14 +345,14 @@ TEST(MergePeriodBoundary, GyroidEqualPeriod_NoBoundaryEdges) {
 					  xtpms::PeriodicTriMesh::VertexHandle(c));
 	}
 
-	// MC 生成的网格在边界处不是周期拓扑
+	// MC meshes are not periodically closed at the boundary
 	int bndBefore = countBoundaryEdges(mesh);
 	EXPECT_GT(bndBefore, 0) << "MC output should have boundary edges before merge";
 
 	xtpms::MergeBoundaryOptions opts;
 	mesh.mergePeriodBoundary(opts);
 
-	// 输出 merge 前后的网格供目视检查
+	// Dump meshes before/after merge for visual inspection
 	OpenMesh::IO::write_mesh(src, "gyroid_equal_before_merge.obj");
 	OpenMesh::IO::write_mesh(mesh, "gyroid_equal_after_merge.obj");
 
@@ -363,7 +364,7 @@ TEST(MergePeriodBoundary, GyroidEqualPeriod_NoBoundaryEdges) {
 }
 
 TEST(MergePeriodBoundary, GyroidTriAxisPeriod_NoBoundaryEdges) {
-	// 三轴不等周期
+	// Unequal half-periods on three axes
 	const Vec3d hp(0.5, 0.7, 0.3);
 	xtpms::DefaultTriMesh src = makeGyroidMC(hp, 16);
 	ASSERT_GT(src.n_faces(), 0u);
@@ -398,8 +399,8 @@ TEST(MergePeriodBoundary, GyroidTriAxisPeriod_NoBoundaryEdges) {
 }
 
 TEST(MergePeriodBoundary, GyroidPeriodizeAndMerge_Closed) {
-	// 完整流程：Gyroid MC → periodizeFrom → mergePeriodBoundary
-	// 用 MC 生成的 Gyroid 作为 periodizeFrom 的输入，模拟实际用例
+	// Full pipeline: Gyroid MC -> periodizeFrom -> mergePeriodBoundary
+	// Feed MC Gyroid into periodizeFrom to mimic a real use case
 	const Vec3d hp(0.5, 0.5, 0.5);
 	xtpms::DefaultTriMesh src = makeGyroidMC(hp, 12);
 	ASSERT_GT(src.n_faces(), 0u);
@@ -512,7 +513,7 @@ TEST(PeriodicMeshPeriodize, StlPeriodizeSymmetry) {
 }
 
 // ──────────────────────────────────────────────────────────
-// Delaunay Remesh 单元测试
+// Delaunay remesh unit tests
 // ──────────────────────────────────────────────────────────
 
 xtpms::PeriodicTriMesh makeClosedTPMS(const Vec3d& hp, const xtpms::DefaultTriMesh& src) {
@@ -622,7 +623,7 @@ TEST(DelaunayRemesh, GyroidRemeshPreservesClosed) {
 }
 
 // ──────────────────────────────────────────────────────────
-// Remesh + Merge 管线诊断测试
+// Remesh + merge pipeline diagnostic tests
 // ──────────────────────────────────────────────────────────
 
 TEST(PipelineDiag, RemeshThenMerge_StepByStep) {
@@ -634,7 +635,7 @@ TEST(PipelineDiag, RemeshThenMerge_StepByStep) {
 	ASSERT_EQ(countBoundaryEdges(mesh), 0) << "initial mesh should be closed";
 	OpenMesh::IO::write_mesh(mesh, "diag_step0_closed.obj");
 
-	// remesh 1 轮
+	// One remesh pass
 	xtpms::RemeshOptions ropts;
 	ropts.outerIter = 1;
 	ropts.innerIter = 3;
@@ -649,7 +650,7 @@ TEST(PipelineDiag, RemeshThenMerge_StepByStep) {
 		std::cout << "[step1] remesh introduced " << bndAfterRemesh
 				  << " boundary edges — need merge\n";
 
-		// 看边界顶点分布
+		// Inspect boundary vertex distribution
 		int bndVerts = 0;
 		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 			if (mesh.is_boundary(*v_it))
@@ -657,7 +658,7 @@ TEST(PipelineDiag, RemeshThenMerge_StepByStep) {
 		}
 		std::cout << "[step1] boundary vertices: " << bndVerts << "\n";
 
-		// 尝试 merge
+		// Attempt merge
 		xtpms::MergeBoundaryOptions mopt;
 		mesh.mergePeriodBoundary(mopt);
 
@@ -669,14 +670,14 @@ TEST(PipelineDiag, RemeshThenMerge_StepByStep) {
 		std::cout << "[step1] mesh still closed after remesh — no merge needed\n";
 	}
 
-	// 一步法向位移模拟
+	// Simulate one normal-displacement step
 	for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 		auto p = mesh.point(*v_it);
-		p[2] += 0.001; // 微小位移
+		p[2] += 0.001; // tiny displacement
 		mesh.set_point(*v_it, p);
 	}
 
-	// 再次 remesh
+	// Remesh again
 	xtpms::delaunayRemesh(mesh, ropts);
 	int bnd2 = countBoundaryEdges(mesh);
 	std::cout << "[step3] after 2nd remesh: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
@@ -697,7 +698,7 @@ TEST(PipelineDiag, RemeshSizeStability) {
 				  << " euler=" << (nv0 - E0 + nf0) << " bnd=" << countBoundaryEdges(mesh) << "\n";
 	}
 
-	// 自动 targetLength
+	// Automatic targetLength
 	xtpms::RemeshOptions ropts;
 	ropts.outerIter = 1;
 	ropts.innerIter = 3;
@@ -707,7 +708,7 @@ TEST(PipelineDiag, RemeshSizeStability) {
 	EXPECT_EQ(countBoundaryEdges(mesh), 0);
 	OpenMesh::IO::write_mesh(mesh, "diag_remesh_auto.obj");
 
-	// 固定 targetLength 连续 remesh 3 次，检查 Euler 守恒和大小稳定
+	// Fixed targetLength remesh x3; check Euler conservation and size stability
 	mesh = makeClosedGyroid(hp, 16);
 	int eulerInit = static_cast<int>(mesh.n_vertices()) - static_cast<int>(mesh.n_edges()) +
 					static_cast<int>(mesh.n_faces());
@@ -729,7 +730,7 @@ TEST(PipelineDiag, RemeshSizeStability) {
 }
 
 TEST(PipelineDiag, RemeshBoundaryDiagnostic) {
-	// 测试多种分辨率和周期组合下 remesh 是否产生边界边
+	// Test whether remesh creates boundary edges across resolutions/periods
 	struct TestCase {
 		Vec3d hp;
 		int res;
@@ -767,12 +768,12 @@ TEST(PipelineDiag, RemeshBoundaryDiagnostic) {
 				  << " euler=" << eulerAfter << "\n";
 
 		if (bndAfter > 0) {
-			// 诊断：输出网格供检查
+			// Diagnostic: dump mesh for inspection
 			std::string fname = "diag_remesh_bnd_case" + std::to_string(ci) + ".obj";
 			OpenMesh::IO::write_mesh(mesh, fname);
 			std::cout << "  -> saved " << fname << " for inspection\n";
 
-			// 统计边界信息
+			// Collect boundary statistics
 			int bndVerts = 0;
 			for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 				if (mesh.is_boundary(*v_it))
@@ -791,7 +792,7 @@ TEST(PipelineDiag, RemeshVisualCheck) {
 	auto mesh = makeClosedGyroid(hp, 16);
 	mesh.saveUnitCell("remesh_vis_step0.obj");
 
-	// 计算初始平均边长
+	// Compute initial average edge length
 	double totalEdgeLen = 0;
 	int edgeCnt = 0;
 	for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it) {
@@ -811,7 +812,7 @@ TEST(PipelineDiag, RemeshVisualCheck) {
 	ropts.targetLength = avgLen;
 	ropts.debugOutputDir = ".";
 
-	// 只跑一轮 remesh 来生成每个子步骤的 debug 网格
+	// Run one remesh pass to dump per-substep debug meshes
 	for (int i = 0; i < 1; ++i) {
 		auto t0 = std::chrono::high_resolution_clock::now();
 		xtpms::delaunayRemesh(mesh, ropts);
@@ -834,10 +835,10 @@ TEST(PipelineDiag, RemeshNonManifoldCheck) {
 
 	xtpms::delaunayRemesh(mesh, ropts);
 
-	// 检查非流形顶点
+	// Check for non-manifold vertices
 	int nonManifoldV = 0;
 	for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
-		// OpenMesh 中非流形顶点的标志：边界顶点在封闭网格中不该存在
+		// OpenMesh non-manifold cue: closed meshes should have no boundary vertices
 		if (mesh.is_boundary(*v_it))
 			++nonManifoldV;
 	}
@@ -848,18 +849,18 @@ TEST(PipelineDiag, RemeshNonManifoldCheck) {
 }
 
 TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
-	// 在远离 TPMS 的周期曲面上验证 sensitivity
-	// 用大扰动的 Schwarz P: cos(πx)+cos(πy)+cos(πz) + 0.4*sin(2πx)sin(πy) = 0
+	// Validate sensitivity on a periodic surface far from a TPMS
+	// Strongly perturbed Schwarz P: cos(pi x)+cos(pi y)+cos(pi z) + 0.4*sin(2 pi x)sin(pi y) = 0
 	const Vec3d hp(1.0, 1.0, 1.0);
 	auto levelSet = [](double x, double y, double z) {
 		double px = M_PI * x, py = M_PI * y, pz = M_PI * z;
 		return std::cos(px) + std::cos(py) + std::cos(pz) + 0.4 * std::sin(2 * px) * std::sin(py);
 	};
-	auto src = makeTPMSMC(hp, levelSet, 40); // 加密到 res=40
+	auto src = makeTPMSMC(hp, levelSet, 40); // densify to res=40
 	auto mesh = makeClosedTPMS(hp, src);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
 
-	// Remesh 改善网格质量
+	// Remesh to improve mesh quality
 	for (int round = 0; round < 3; ++round) {
 		xtpms::RemeshOptions ropts;
 		ropts.outerIter = 2;
@@ -874,7 +875,7 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 	}
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
 
-	// 沿法向二分搜索投影到隐函数水平集
+	// Project onto the implicit level set along the normal via bisection
 	{
 		auto geomProj = xtpms::computeVertexGeometry(mesh);
 		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
@@ -884,7 +885,7 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 							  static_cast<double>(mesh.point(*v_it)[2]));
 			Eigen::Vector3d n = geomProj.vertexNormals[static_cast<std::size_t>(vi)];
 			double f0 = levelSet(p[0], p[1], p[2]);
-			// 二分搜索：找 t 使得 levelSet(p + t*n) = 0
+			// Bisection: find t such that levelSet(p + t*n) = 0
 			double tlo = -0.1, thi = 0.1;
 			double flo = levelSet(p[0] + tlo * n[0], p[1] + tlo * n[1], p[2] + tlo * n[2]);
 			double fhi = levelSet(p[0] + thi * n[0], p[1] + thi * n[1], p[2] + thi * n[2]);
@@ -907,7 +908,7 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 									 static_cast<xtpms::DefaultTriMesh::Scalar>(p[1] + t * n[1]),
 									 static_cast<xtpms::DefaultTriMesh::Scalar>(p[2] + t * n[2])));
 			} else if (std::abs(f0) > 1e-10) {
-				// 如果二分区间内没有零点，用 Newton 步
+				// If the bisection bracket has no root, take a Newton step
 				double gx = -M_PI * std::sin(M_PI * p[0]) +
 							0.4 * 2 * M_PI * std::cos(2 * M_PI * p[0]) * std::sin(M_PI * p[1]);
 				double gy = -M_PI * std::sin(M_PI * p[1]) +
@@ -927,7 +928,7 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 				}
 			}
 		}
-		// 检查投影质量
+		// Check projection quality
 		double maxErr = 0;
 		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 			auto p = mesh.point(*v_it);
@@ -948,7 +949,7 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 			(double)m.halfPeriod()[0], (double)m.halfPeriod()[1], (double)m.halfPeriod()[2]};
 		const int nv = (int)m.n_vertices();
 
-		// 原始顶点 wrap 到 [0,L)
+		// Wrap original vertices into [0, L)
 		std::vector<std::array<double, 3>> verts(nv);
 		for (auto v = m.vertices_begin(); v != m.vertices_end(); ++v) {
 			auto& p = m.point(*v);
@@ -963,13 +964,13 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 			}
 		}
 
-		// 逐面 unwrap，记录 dup 顶点和它的原始索引
+		// Unwrap face-by-face; record duplicated vertices and their original indices
 		struct F3 {
 			int v[3];
 		};
 		std::vector<F3> faces;
 		std::vector<std::array<double, 3>> extraVerts;
-		std::vector<int> extraOrigIdx; // 额外顶点对应的原始顶点索引
+		std::vector<int> extraOrigIdx; // original vertex index for each extra vertex
 
 		for (auto f = m.faces_begin(); f != m.faces_end(); ++f) {
 			auto fv = m.cfv_iter(*f);
@@ -1023,8 +1024,8 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 			faces.push_back(face);
 		}
 
-		// 写 OBJ：v x y z r g b (vertex color = scalar mapped to colormap)
-		// 先算 scalar 的范围
+		// Write OBJ: v x y z r g b (vertex color = scalar mapped to colormap)
+		// First compute scalar range
 		double smin = scalar.minCoeff(), smax = scalar.maxCoeff();
 		double srange = smax - smin;
 		if (srange < 1e-30)
@@ -1054,7 +1055,7 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 		for (auto& f : faces)
 			ofs << "f " << f.v[0] + 1 << " " << f.v[1] + 1 << " " << f.v[2] + 1 << "\n";
 
-		// 同时输出 raw scalar txt（和顶点一一对应）
+		// Also write raw scalar txt (one value per vertex)
 		std::string txtFile = filename.substr(0, filename.rfind('.')) + "_scalar.txt";
 		std::ofstream tfs(txtFile);
 		tfs << "# vertex_index original_index x y z scalar\n";
@@ -1077,7 +1078,7 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 	std::cout << "kA =\n" << kA << "\n";
 	std::cout << "APAC = " << kA.trace() / 3.0 << "\n\n";
 
-	// 计算 sensitivity
+	// Compute sensitivity
 	auto sens = xtpms::computeSensitivity(mesh, geom, ulist);
 	auto kAv = xtpms::toVoigt(kA);
 	kAv.tail<3>() /= 2.0;
@@ -1088,7 +1089,7 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 			sens.aSens[i] /= ai;
 		}
 	}
-	// 测试 APAC 和 k00 两种目标
+	// Test both APAC and k00 objectives
 	struct ObjCase {
 		std::string name;
 		std::string type;
@@ -1100,12 +1101,12 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 		Eigen::VectorXd dfdvn =
 			(sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-objRes.gradient);
 
-		// 输出 sensitivity 场到网格
+		// Write sensitivity field onto the mesh
 		saveUnitCellWithScalar(mesh, dfdvn, "perturbed_tpms_sens_" + oc.type + ".obj");
 		std::cout << "Saved perturbed_tpms_sens_" << oc.type << ".obj"
 				  << "  dfdvn: min=" << dfdvn.minCoeff() << " max=" << dfdvn.maxCoeff() << "\n";
 
-		// vn 场：使用光滑三周期函数
+		// vn field: smooth triply periodic function
 		struct VnCase {
 			std::string name;
 			std::function<double(double, double, double)> fn;
@@ -1173,18 +1174,18 @@ TEST(AsymptoticConductivity, SensitivityFiniteDifference) {
 }
 
 // ──────────────────────────────────────────────────────────
-// Revolution surface 旋转体辅助
+// Revolution surface helpers
 // ──────────────────────────────────────────────────────────
 
-// 旋转体 profile: R(x) 是关于 x 的周期函数，绕 x 轴旋转
-// xtpms 域 [0, 2*hp]^3, 物理域 [-hp, hp]
+// Revolution profile: R(x) is periodic in x and rotated about the x-axis
+// xtpms domain [0, 2*hp]^3, physical domain [-hp, hp]
 // level set: y² + z² - R(x)² = 0
 struct RevolutionProfile {
 	using Func = std::function<double(double)>;
 	Func R;	 // radius profile R(x), x ∈ [-hp, hp]
 	Func dR; // R'(x)
 
-	// 解析 k11: 4 / I1 / I2
+	// Analytic k11: 4 / I1 / I2
 	// I1 = ∫_{-hp}^{hp} sqrt(1 + R'(x)²) / R(x) dx
 	// I2 = ∫_{-hp}^{hp} R(x) * sqrt(1 + R'(x)²) dx
 	double analyticK11(double hp, int nquad = 10000) const {
@@ -1201,21 +1202,21 @@ struct RevolutionProfile {
 		return 4.0 / I1 / I2;
 	}
 
-	// dk11 的泛函一阶变分（解析公式 + 数值积分）
-	// 给定轴对称法向速度 vn(x)，δR(x) = vn(x) / sqrt(1+R'²)
+	// First variation of dk11 (analytic formula + numerical quadrature)
+	// Given axisymmetric normal speed vn(x), dR(x) = vn(x) / sqrt(1+R'^2)
 	//
 	// k11 = 4 / (I1 * I2)
 	// δk11 = -k11 * (δI1/I1 + δI2/I2)
 	//
-	// 对泛函 I = ∫ f(R, R') dx 的一阶变分:
+	// First variation of I = int f(R, R') dx:
 	// δI = ∫ [∂f/∂R - d/dx(∂f/∂R')] * δR dx  (Euler-Lagrange)
 	//
-	// I1 的被积函数 f1 = s/R, s = sqrt(1+R'²):
+	// Integrand of I1: f1 = s/R, s = sqrt(1+R'^2):
 	//   ∂f1/∂R = -s/R²
 	//   ∂f1/∂R' = R'/(R*s)
 	//   EL1(x) = -s/R² - d/dx[R'/(R*s)]
 	//
-	// I2 的被积函数 f2 = R*s:
+	// Integrand of I2: f2 = R*s:
 	//   ∂f2/∂R = s
 	//   ∂f2/∂R' = R*R'/s
 	//   EL2(x) = s - d/dx[R*R'/s]
@@ -1224,15 +1225,15 @@ struct RevolutionProfile {
 		double dx = 2.0 * hp / nquad;
 		double I1 = 0, I2 = 0;
 
-		// d/dx 项用数值微分
+		// d/dx term via finite differences
 		auto EL_term_R = [&](double x, double hd) {
-			// ∂f1/∂R' 在 x 处的值: R'/(R*s)
+			// df1/dR' at x: R'/(R*s)
 			auto g1 = [&](double xx) {
 				double rr = R(xx), dr = dR(xx);
 				double ss = std::sqrt(1.0 + dr * dr);
 				return dr / (rr * ss);
 			};
-			// ∂f2/∂R' 在 x 处的值: R*R'/s
+			// df2/dR' at x: R*R'/s
 			auto g2 = [&](double xx) {
 				double rr = R(xx), dr = dR(xx);
 				double ss = std::sqrt(1.0 + dr * dr);
@@ -1244,7 +1245,7 @@ struct RevolutionProfile {
 		};
 
 		double dI1 = 0, dI2 = 0;
-		double hd = dx * 0.5; // 数值微分步长
+		double hd = dx * 0.5; // finite-difference step
 		for (int i = 0; i < nquad; ++i) {
 			double x = -hp + (i + 0.5) * dx;
 			double r = R(x), dr = dR(x);
@@ -1269,7 +1270,7 @@ struct RevolutionProfile {
 		return -k11 * (dI1 / I1 + dI2 / I2);
 	}
 
-	// 对比用：1D FD 验证变分公式
+	// Cross-check: 1D FD of the variation formula
 	double fdDk11(double hp, const Func& vn, double eps = 1e-7, int nquad = 100000) const {
 		auto k11_at_eps = [&](double e) {
 			auto R_e = [&](double x) {
@@ -1282,7 +1283,7 @@ struct RevolutionProfile {
 			for (int i = 0; i < nquad; ++i) {
 				double x = -hp + (i + 0.5) * dx;
 				double r = R_e(x);
-				// R_e' 用数值微分
+				// R_e' via finite differences
 				double dr = (R_e(x + hd) - R_e(x - hd)) / (2.0 * hd);
 				double s = std::sqrt(1.0 + dr * dr);
 				I1 += s / r * dx;
@@ -1293,15 +1294,15 @@ struct RevolutionProfile {
 		return (k11_at_eps(eps) - k11_at_eps(-eps)) / (2.0 * eps);
 	}
 
-	// 将顶点投影到精确曲面 (y-cy)²+(z-cz)²-R(x-cx)²=0
-	// 沿径向(y,z)缩放到精确半径
+	// Project vertices onto exact surface (y-cy)^2+(z-cz)^2-R(x-cx)^2=0
+	// Scale radially in (y,z) to the exact radius
 	void projectToSurface(xtpms::PeriodicTriMesh& mesh, const Vec3d& halfPeriod) const {
 		double cx = static_cast<double>(halfPeriod[0]);
 		double cy = static_cast<double>(halfPeriod[1]);
 		double cz = static_cast<double>(halfPeriod[2]);
 		for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end(); ++v_it) {
 			auto p = mesh.point(*v_it);
-			double x = static_cast<double>(p[0]) - cx; // 映射到 [-hp, hp]
+			double x = static_cast<double>(p[0]) - cx; // map into [-hp, hp]
 			double y = static_cast<double>(p[1]) - cy;
 			double z = static_cast<double>(p[2]) - cz;
 			double r_current = std::sqrt(y * y + z * z);
@@ -1337,16 +1338,16 @@ struct RevolutionProfile {
 		}
 	}
 
-	// 生成 MC level set 网格
+	// Generate MC level-set mesh
 	xtpms::DefaultTriMesh generateMC(const Vec3d& halfPeriod, int res) const {
 		const double Lx = 2.0 * static_cast<double>(halfPeriod[0]);
 		const double Ly = 2.0 * static_cast<double>(halfPeriod[1]);
 		const double Lz = 2.0 * static_cast<double>(halfPeriod[2]);
 		const double hpx = static_cast<double>(halfPeriod[0]);
 		auto levelSet = [&](double x, double y, double z) {
-			// 映射 x ∈ [0, 2*hp] → [-hp, hp]
+			// Map x in [0, 2*hp] -> [-hp, hp]
 			double xp = x - hpx;
-			// 映射 y, z 到以 0 为中心
+			// Map y, z to be centered at 0
 			double yp = y - static_cast<double>(halfPeriod[1]);
 			double zp = z - static_cast<double>(halfPeriod[2]);
 			double r = R(xp);
@@ -1355,7 +1356,7 @@ struct RevolutionProfile {
 		return makeTPMSMC(halfPeriod, levelSet, res);
 	}
 
-	// 生成周期闭合网格（可选投影到精确曲面）
+	// Build a periodically closed mesh (optional projection onto exact surface)
 	xtpms::PeriodicTriMesh generateClosed(const Vec3d& hp, int res, bool project = false) const {
 		auto src = generateMC(hp, res);
 		if (project)
@@ -1368,7 +1369,7 @@ struct RevolutionProfile {
 };
 
 // ──────────────────────────────────────────────────────────
-// minsurf 参考实现（直接拷贝），放在 msf_ref 命名空间
+// minsurf reference implementation (copied), under namespace msf_ref
 // ──────────────────────────────────────────────────────────
 namespace msf_ref {
 
@@ -1494,12 +1495,12 @@ Eigen::Vector<double, 6> voigt(const Eigen::Matrix3d& eps) {
 } // namespace msf_ref
 
 // ──────────────────────────────────────────────────────────
-// Revolution surface ADC 验证：k11 解析 vs 数值
+// Revolution-surface ADC check: analytic k11 vs numerical
 // ──────────────────────────────────────────────────────────
 
 TEST(AsymptoticConductivity, RevolutionSurface_K11) {
-	// 旋转体绕 x 轴，R(x) 周期函数，域 [-1,1]^3
-	// 测试多种 profile 在不同分辨率下的收敛性
+	// Surface of revolution about x; periodic R(x); domain [-1,1]^3
+	// Test convergence of several profiles across resolutions
 	const Vec3d hp(1.0, 1.0, 1.0);
 
 	struct TestCase {
@@ -1509,23 +1510,23 @@ TEST(AsymptoticConductivity, RevolutionSurface_K11) {
 
 	std::vector<TestCase> cases;
 
-	// Case 1: 圆柱 R(x) = 0.3 (常数)
+	// Case 1: cylinder R(x) = 0.3 (constant)
 	// k11 = 4 / (2/0.3) / (2*0.3) = 4 / 6.667 / 0.6 = 1.0
-	// 实际上 k11 = 4 / (∫ 1/R dx) / (∫ R dx) = 4 / (2/0.3) / (2*0.3) = 4/6.667/0.6 = 1.0
+	// Indeed k11 = 4 / (int 1/R dx) / (int R dx) = 4 / (2/0.3) / (2*0.3) = 4/6.667/0.6 = 1.0
 	cases.push_back({"cylinder_R0.3", {[](double) { return 0.3; }, [](double) { return 0.0; }}});
 
-	// Case 2: 微扰圆柱 R(x) = 0.3 + 0.05*cos(pi*x)
+	// Case 2: mildly perturbed cylinder R(x) = 0.3 + 0.05*cos(pi*x)
 	cases.push_back({"perturbed_cyl",
 					 {[](double x) { return 0.3 + 0.05 * std::cos(M_PI * x); },
 					  [](double x) { return -0.05 * M_PI * std::sin(M_PI * x); }}});
 
-	// Case 3: 较大扰动 R(x) = 0.3 + 0.12*cos(pi*x)
+	// Case 3: larger perturbation R(x) = 0.3 + 0.12*cos(pi*x)
 	cases.push_back({"wavy_cyl",
 					 {[](double x) { return 0.3 + 0.12 * std::cos(M_PI * x); },
 					  [](double x) { return -0.12 * M_PI * std::sin(M_PI * x); }}});
 
-	// Case 4: catenoid-like R(x) = 0.2*cosh(x/0.2) 但截断使其周期
-	// 用 cos 近似: R(x) = 0.25 + 0.1*cos(pi*x)
+	// Case 4: catenoid-like R(x) = 0.2*cosh(x/0.2), truncated to be periodic
+	// Cosine approximation: R(x) = 0.25 + 0.1*cos(pi*x)
 	cases.push_back({"catenoid_approx",
 					 {[](double x) { return 0.25 + 0.1 * std::cos(M_PI * x); },
 					  [](double x) { return -0.1 * M_PI * std::sin(M_PI * x); }}});
@@ -1561,7 +1562,7 @@ TEST(AsymptoticConductivity, RevolutionSurface_K11) {
 			std::cout << "  full kA diag: " << kA(0, 0) << " " << kA(1, 1) << " " << kA(2, 2)
 					  << "\n";
 
-			// 最高分辨率应该有合理精度
+			// Highest resolution should have acceptable accuracy
 			if (res == resolutions.back()) {
 				EXPECT_LT(rel_err, 0.1)
 					<< tc.name << " k11 relative error too large at res=" << res;
@@ -1571,17 +1572,17 @@ TEST(AsymptoticConductivity, RevolutionSurface_K11) {
 }
 
 TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
-	// 在旋转体上验证 sensitivity 公式：
-	// 指定轴对称法向速度 vn(x)，计算 δk11
-	// 解析值: 通过 1D 积分公式的 FD 得到
-	// 数值值: 通过 computeSensitivity 公式得到
+	// Validate the sensitivity formula on a surface of revolution:
+	// Prescribe axisymmetric normal speed vn(x) and compute dk11
+	// Analytic: FD of the 1D integral formula
+	// Numerical: from computeSensitivity
 	const Vec3d hp(1.0, 1.0, 1.0);
 
 	// Profile: R(x) = 0.3 + 0.05*cos(pi*x)
 	RevolutionProfile prof{[](double x) { return 0.3 + 0.05 * std::cos(M_PI * x); },
 						   [](double x) { return -0.05 * M_PI * std::sin(M_PI * x); }};
 
-	// 法向速度场（只依赖 x，保持轴对称）
+	// Normal velocity field (depends only on x; axisymmetric)
 	struct VnField {
 		std::string name;
 		RevolutionProfile::Func vn;
@@ -1592,17 +1593,17 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 		{"1.0 (uniform)", [](double) { return 1.0; }},
 	};
 
-	// 多分辨率收敛测试
+	// Multi-resolution convergence test
 	std::vector<int> resolutions = {32};
 
 	for (int res : resolutions) {
-		auto mesh = prof.generateClosed(hp, res, true); // 投影到精确曲面
+		auto mesh = prof.generateClosed(hp, res, true); // project onto exact surface
 		if (countBoundaryEdges(mesh) > 0 || mesh.n_faces() < 100) {
 			std::cout << "  res=" << res << " bad mesh, skip\n";
 			continue;
 		}
 
-		// Remesh 消除退化三角形
+		// Remesh to remove degenerate triangles
 		for (int round = 0; round < 3; ++round) {
 			xtpms::RemeshOptions ropts;
 			ropts.outerIter = 2;
@@ -1615,7 +1616,7 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 			if (hasBnd)
 				mesh.mergePeriodBoundary();
 		}
-		// remesh 后再投影回精确曲面
+		// Project back onto the exact surface after remesh
 		prof.projectToSurface(mesh, hp);
 
 		if (countBoundaryEdges(mesh) > 0) {
@@ -1623,7 +1624,7 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 			continue;
 		}
 
-		// 输出网格供检查
+		// Dump mesh for inspection
 		mesh.saveUnitCell("revolution_res" + std::to_string(res) + ".obj");
 		OpenMesh::IO::write_mesh(mesh, "revolution_res" + std::to_string(res) + "_raw.obj");
 		std::cout << "Saved revolution_res" << res << ".obj and _raw.obj\n";
@@ -1637,7 +1638,7 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 		std::cout << "\n--- res=" << res << " nv=" << nv << " nf=" << mesh.n_faces()
 				  << " k11=" << kA(0, 0) << " (exact=" << prof.analyticK11(1.0) << ") ---\n";
 
-		// 计算 sensitivity
+		// Compute sensitivity
 		auto sens = xtpms::computeSensitivity(mesh, geom, ulist);
 		for (int i = 0; i < nv; ++i) {
 			double ai = geom.vertexAreas[i];
@@ -1652,16 +1653,16 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 		k11_grad[0] = 1.0;
 		Eigen::VectorXd dfdvn = (sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-k11_grad);
 
-		// ── 先验证面积导数 ──
+		// -- First verify area derivative --
 		auto sensRaw = xtpms::computeSensitivity(mesh, geom, ulist);
 		{
-			// 用 uniform vn=1.0 验证面积导数
-			// A_sens 不除以顶点面积，直接用 raw 值
+			// Verify area derivative with uniform vn=1.0
+			// Use raw A_sens (not divided by vertex area)
 			double dAs_ana = 0;
 			for (int i = 0; i < nv; ++i)
-				dAs_ana += sensRaw.aSens[i]; // vn=1 时就是直接求和
+				dAs_ana += sensRaw.aSens[i]; // with vn=1 this is a plain sum
 
-			// mesh FD: 扰动后重算面积
+			// mesh FD: recompute area after perturbation
 			for (double step : {1e-2, 1e-3}) {
 				auto perturbArea = [&](double s) {
 					xtpms::PeriodicTriMesh copy = mesh;
@@ -1689,7 +1690,7 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 		}
 		std::cout << "\n";
 
-		// ── 用解析 u₀ 代入 sensitivity 公式验证 ──
+		// -- Verify sensitivity with analytic u0 --
 		// u₀(x) = ∫_{-1}^x [s(ζ)/R(ζ) * c3 - 1] dζ, s=sqrt(1+R'²)
 		// c3 = 2 / I1, I1 = ∫_{-1}^1 s/R dx
 		{
@@ -1703,11 +1704,11 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 			}
 			double c3 = 2.0 / I1_quad;
 
-			// 用解析 u₀ 设置 ulist 的第 0 列
-			Eigen::MatrixX3d ulist_analytic = ulist; // 保留 u1, u2 不变
+			// Set column 0 of ulist from analytic u0
+			Eigen::MatrixX3d ulist_analytic = ulist; // keep u1, u2 unchanged
 			for (int i = 0; i < nv; ++i) {
 				auto pt = mesh.point(xtpms::PeriodicTriMesh::VertexHandle(i));
-				double xv = static_cast<double>(pt[0]) - 1.0; // 映射到 [-1,1]
+				double xv = static_cast<double>(pt[0]) - 1.0; // map into [-1, 1]
 				// u₀(xv) = ∫_{-1}^{xv} [s/R * c3 - 1] dζ
 				double u0 = 0;
 				int nstep = 10000;
@@ -1720,16 +1721,16 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 				}
 				ulist_analytic(i, 0) = u0;
 			}
-			// 减去均值（和求解器一致）
+			// Subtract mean (same as the solver)
 			ulist_analytic.col(0).array() -= ulist_analytic.col(0).mean();
 
-			// 用解析 u 计算 sensitivity
+			// Sensitivity with analytic u
 			auto sens_ana_u = xtpms::computeSensitivity(mesh, geom, ulist_analytic);
 
-			// 用数值 u 计算 sensitivity
+			// Sensitivity with numerical u
 			auto sens_num_u = xtpms::computeSensitivity(mesh, geom, ulist);
 
-			// 比较 v_sens 的 k11 分量（Voigt index 0）
+			// Compare v_sens k11 component (Voigt index 0)
 			double vSens_k11_ana = 0, vSens_k11_num = 0;
 			double aSens_sum = 0;
 			for (int i = 0; i < nv; ++i) {
@@ -1738,9 +1739,9 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 				aSens_sum += sens_num_u.aSens[i];
 			}
 
-			// 从 v_sens 和 A_sens 算 dk11 (uniform vn=1)
-			// dk11 = (-v_sens_00/As + k11 * A_sens/As) * (-1) ... 按公式
-			// 但这里先看 raw v_sens 的对比
+			// Compute dk11 from v_sens and A_sens (uniform vn=1)
+			// dk11 = (-v_sens_00/As + k11 * A_sens/As) * (-1) ... per formula
+			// For now compare raw v_sens
 			std::cout << "  v_sens k11 (uniform vn=1):\n";
 			std::cout << "    with analytic u₀: " << vSens_k11_ana << "\n";
 			std::cout << "    with numeric u₀:  " << vSens_k11_num << "\n";
@@ -1748,7 +1749,7 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 					  << (std::abs(vSens_k11_num) > 1e-15 ? vSens_k11_ana / vSens_k11_num : 0)
 					  << "\n";
 
-			// 也检查 u₀ 本身的差异
+			// Also check the difference in u0 itself
 			double u_diff = 0, u_norm = 0;
 			for (int i = 0; i < nv; ++i) {
 				double d = ulist_analytic(i, 0) - ulist(i, 0);
@@ -1757,8 +1758,8 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 			}
 			std::cout << "    u₀ relative diff: " << std::sqrt(u_diff / (u_norm + 1e-30)) << "\n";
 
-			// 用解析 u 算完整的 dk11
-			// dk11/dvn = -v_sens_00/As + k11 * A_sens/As (per vertex, uniform vn=1, 不除 Av)
+			// Full dk11 with analytic u
+			// dk11/dvn = -v_sens_00/As + k11 * A_sens/As (per vertex, uniform vn=1, no Av divide)
 			double dk11_formula_ana_u = (-vSens_k11_ana / As + kA(0, 0) * aSens_sum / As);
 			double dk11_formula_num_u = (-vSens_k11_num / As + kA(0, 0) * aSens_sum / As);
 			double dk11_var = prof.variationalDk11(1.0, [](double) { return 1.0; });
@@ -1766,7 +1767,7 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 			std::cout << "    dk11 (analytic u): " << dk11_formula_ana_u << "\n";
 			std::cout << "    dk11 (numeric u):  " << dk11_formula_num_u << "\n";
 			std::cout << "    dk11 variational:  " << dk11_var << "\n";
-			// mesh FD 用 step=1e-2
+			// mesh FD with step=1e-2
 			auto perturbK11 = [&](double s) {
 				xtpms::PeriodicTriMesh copy = mesh;
 				for (auto v_it = copy.vertices_begin(); v_it != copy.vertices_end(); ++v_it) {
@@ -1798,11 +1799,12 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 				vn_vec[i] = vnf.vn(x);
 			}
 
-			// dfdvn 是逐顶点梯度（已除以 Av），方向导数需要面积加权内积
-			double dk11_formula_wrong = vn_vec.dot(dfdvn); // 错误：无权内积
+			// dfdvn is per-vertex (already /Av); directional derivative needs area-weighted inner
+			// product
+			double dk11_formula_wrong = vn_vec.dot(dfdvn); // wrong: unweighted inner product
 			double dk11_formula = 0;
 			for (int i = 0; i < nv; ++i)
-				dk11_formula += vn_vec[i] * dfdvn[i] * geom.vertexAreas[i]; // 面积加权
+				dk11_formula += vn_vec[i] * dfdvn[i] * geom.vertexAreas[i]; // area-weighted
 			double dk11_var = prof.variationalDk11(1.0, vnf.vn);
 
 			double stepMesh = 1e-2;
@@ -1842,7 +1844,7 @@ TEST(AsymptoticConductivity, RevolutionSurface_SensitivityCheck) {
 }
 
 TEST(AsymptoticConductivity, CompareWithMinsurf) {
-	// 对同一网格的同一面，分别用 xtpms 和 minsurf 参考实现计算中间量并对比
+	// On the same face of the same mesh, compare intermediate quantities from xtpms vs minsurf ref
 	const Vec3d hp(1.0, 1.0, 1.0);
 	auto mesh = makeClosedSchwarzP(hp, 20);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
@@ -1851,7 +1853,7 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 	Eigen::MatrixX3d ulist;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
 
-	// 取 1-ring 数据构建 msf_ref::Compile1ring
+	// Build msf_ref::Compile1ring from 1-ring data
 	auto toEig = [](const Vec3d& v) { return Eigen::Vector3d(v[0], v[1], v[2]); };
 	auto makePeriodLocal = [&](const Vec3d& v) {
 		Vec3d out = v;
@@ -1867,14 +1869,14 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 		return out;
 	};
 
-	// 为每个顶点构建 msf_ref 版本的 Compile1ring
+	// Build msf_ref Compile1ring for each vertex
 	int nv = static_cast<int>(mesh.n_vertices());
 	std::vector<msf_ref::Compile1ring> msf_vrings(nv);
 	for (int vid = 0; vid < nv; ++vid) {
 		auto vh = xtpms::PeriodicTriMesh::VertexHandle(vid);
 		Eigen::Vector3d center = toEig(mesh.point(vh));
 		std::vector<Eigen::Vector3d> ring;
-		// 用和 xtpms 完全相同的 1-ring 数据
+		// Use exactly the same 1-ring data as xtpms
 		if (!mesh.is_boundary(vh)) {
 			auto he_start = mesh.halfedge_handle(vh);
 			auto he = he_start;
@@ -1887,7 +1889,7 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 		msf_vrings[vid] = msf_ref::Compile1ring(center, ring);
 	}
 
-	// 逐面对比前几个面
+	// Compare the first few faces
 	int checked = 0;
 	int diffs = 0;
 	for (auto f_it = mesh.faces_begin(); f_it != mesh.faces_end() && checked < 5;
@@ -1900,7 +1902,7 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 		auto v2h = *fv;
 		int i0 = v0h.idx(), i1 = v1h.idx(), i2 = v2h.idx();
 
-		// 构建周期包装后的三角形（两个版本用同一个 tri）
+		// Build period-wrapped triangle (both versions share the same tri)
 		Eigen::Vector3d p0 = toEig(mesh.point(v0h));
 		Eigen::Vector3d p1 = p0 + toEig(makePeriodLocal(mesh.point(v1h) - mesh.point(v0h)));
 		Eigen::Vector3d p2 = p0 + toEig(makePeriodLocal(mesh.point(v2h) - mesh.point(v0h)));
@@ -1909,7 +1911,7 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 		tri.col(1) = p1;
 		tri.col(2) = p2;
 
-		// === xtpms 版本 ===
+		// === xtpms version ===
 		auto fr_x = xtpms::faceFrame(tri);
 		auto be_x = xtpms::secondFundamentalFormEdge(
 			tri, geom.vrings[i0], geom.vrings[i1], geom.vrings[i2]);
@@ -1918,7 +1920,7 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 		auto bform_x = xtpms::fromVoigt3(bfv_x);
 		auto G_x = xtpms::scalarGradientMatrix(tri, fr_x);
 
-		// === msf_ref 版本 ===
+		// === msf_ref version ===
 		auto fr_m = msf_ref::face_frame(tri);
 		auto be_m =
 			msf_ref::second_fundamental_form(tri, msf_vrings[i0], msf_vrings[i1], msf_vrings[i2]);
@@ -1947,7 +1949,7 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 
 		std::cout << "Face " << (*f_it).idx() << " (v" << i0 << ",v" << i1 << ",v" << i2 << "):\n";
 
-		// 对比法向
+		// Compare normals
 		double nv_dot0 = geom.vrings[i0].nv.dot(msf_vrings[i0].nv);
 		double nv_dot1 = geom.vrings[i1].nv.dot(msf_vrings[i1].nv);
 		double nv_dot2 = geom.vrings[i2].nv.dot(msf_vrings[i2].nv);
@@ -1956,32 +1958,32 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 				  << geom.vrings[i2].As << "] msf=[" << msf_vrings[i0].As << ","
 				  << msf_vrings[i1].As << "," << msf_vrings[i2].As << "]\n";
 
-		// 对比 face frame
+		// Compare face frames
 		double fr_dot = (fr_x.col(2).normalized()).dot(fr_m.col(2).normalized());
 		std::cout << "  fr_n dot: " << fr_dot << "\n";
 
-		// 对比 be
+		// Compare be
 		std::cout << "  be: xtpms=" << be_x.transpose() << " msf=" << be_m.transpose()
 				  << " diff=" << (be_x - be_m).norm() << "\n";
 
-		// 对比 Bn
+		// Compare Bn
 		std::cout << "  Bn diff: " << (Bn_x - Bn_m).norm() << "\n";
 
-		// 对比 bform
+		// Compare bform
 		std::cout << "  bform: xtpms=\n"
 				  << bform_x << "\n    msf=\n"
 				  << bform_m << "\n    diff=" << (bform_x - bform_m).norm() << "\n";
 
-		// 对比 G
+		// Compare G
 		std::cout << "  G diff: " << (G_x - G_m).norm() << "\n";
 
-		// 对比 gu
+		// Compare gu
 		std::cout << "  gu diff: " << (gu_x - gu_m).norm() << "\n";
 
-		// 对比 pw
+		// Compare pw
 		std::cout << "  pw diff: " << (pw_x - pw_m).norm() << "\n";
 
-		// 对比 sens
+		// Compare sens
 		std::cout << "  sens trace: xtpms=" << sens_x.trace() << " msf=" << sens_m.trace() << "\n";
 		std::cout << "  sens diff: " << (sens_x - sens_m).norm() << "\n";
 
@@ -1996,30 +1998,30 @@ TEST(AsymptoticConductivity, CompareWithMinsurf) {
 }
 
 TEST(Surgery, DiagnoseRingOrder) {
-	// 检查 cvoh_iter 的遍历顺序是否与面环形一致
+	// Check whether cvoh_iter order matches face-ring order
 	const Vec3d hp(0.5, 0.5, 0.5);
 	auto mesh = makeClosedGyroid(hp, 16);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
 
-	// 取前几个内部顶点，比较 cvoh_iter 顺序和面遍历顺序
+	// Take a few interior vertices; compare cvoh_iter order vs face traversal
 	int checked = 0;
 	for (auto v_it = mesh.vertices_begin(); v_it != mesh.vertices_end() && checked < 5; ++v_it) {
 		if (mesh.is_boundary(*v_it))
 			continue;
 		auto vh = *v_it;
 
-		// 方法1: cvoh_iter（当前用法）
+		// Method 1: cvoh_iter (current usage)
 		std::vector<int> ring_voh;
 		for (auto voh = mesh.cvoh_iter(vh); voh.is_valid(); ++voh)
 			ring_voh.push_back(mesh.to_vertex_handle(*voh).idx());
 
-		// 方法2: 通过面遍历（保证 CCW）
+		// Method 2: face traversal (CCW)
 		std::vector<int> ring_face;
-		auto he_start = mesh.halfedge_handle(vh); // 一条 outgoing halfedge
+		auto he_start = mesh.halfedge_handle(vh); // one outgoing halfedge
 		auto he = he_start;
 		do {
 			ring_face.push_back(mesh.to_vertex_handle(he).idx());
-			// 转到下一条 outgoing: prev(opp(he))? 或 opp(next(he))?
+			// Advance to next outgoing: prev(opp(he))? or opp(next(he))?
 			he = mesh.opposite_halfedge_handle(mesh.prev_halfedge_handle(he));
 		} while (he != he_start && ring_face.size() < 20);
 
@@ -2032,7 +2034,7 @@ TEST(Surgery, DiagnoseRingOrder) {
 			std::cout << v << ",";
 		std::cout << "] same=" << same << "\n";
 
-		// 计算两种顺序的 Compile1ring H 值
+		// Compute Compile1ring H for both orderings
 		auto buildRing = [&](const std::vector<int>& order) {
 			Eigen::Vector3d center = Eigen::Vector3d(static_cast<double>(mesh.point(vh)[0]),
 													 static_cast<double>(mesh.point(vh)[1]),
@@ -2053,7 +2055,7 @@ TEST(Surgery, DiagnoseRingOrder) {
 		std::cout << "  H_voh=" << cr_voh.H << " H_face=" << cr_face.H << " As_voh=" << cr_voh.As
 				  << " As_face=" << cr_face.As << " Lx_voh=" << cr_voh.Lx.norm()
 				  << " Lx_face=" << cr_face.Lx.norm() << "\n";
-		// 输出 ring 的实际坐标（看 wrap 是否正确）
+		// Print ring coordinates (check wrapping)
 		if (checked == 0) {
 			auto center = Eigen::Vector3d(static_cast<double>(mesh.point(vh)[0]),
 										  static_cast<double>(mesh.point(vh)[1]),
@@ -2078,7 +2080,7 @@ TEST(Surgery, DiagnoseRingOrder) {
 }
 
 TEST(Surgery, GyroidSurgerySmoke) {
-	// MC 生成的 Gyroid 离散曲率统计（MC 网格不精确，离散 H 可能很大）
+	// Discrete curvature stats on MC Gyroid (MC is inexact; discrete H can be large)
 	const Vec3d hp(0.5, 0.5, 0.5);
 	for (int res : {16, 24, 32}) {
 		auto m = makeClosedGyroid(hp, res);
@@ -2093,7 +2095,7 @@ TEST(Surgery, GyroidSurgerySmoke) {
 				  << " avgH=" << avgH << "\n";
 	}
 
-	// 对 remesh 后的 Gyroid 做 surgery 测试（remesh 后网格质量更好，H 更合理）
+	// Surgery test on remeshed Gyroid (better quality; more reasonable H)
 	auto mesh = makeClosedGyroid(hp, 16);
 	xtpms::RemeshOptions ropts;
 	ropts.outerIter = 1;
@@ -2134,7 +2136,7 @@ TEST(Surgery, NeckMesh_SurgeryAndFill) {
 			  << " bnd=" << countBoundaryEdges(mesh) << "\n";
 	mesh.saveUnitCell("neck_before_surgery.obj");
 
-	// remesh 先改善网格质量
+	// Remesh first to improve mesh quality
 	xtpms::RemeshOptions ropts;
 	ropts.outerIter = 1;
 	ropts.innerIter = 3;
@@ -2147,7 +2149,7 @@ TEST(Surgery, NeckMesh_SurgeryAndFill) {
 	std::cout << "after remesh: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
 			  << " maxH=" << maxH << " bnd=" << countBoundaryEdges(mesh) << "\n";
 
-	// surgery（降低阈值触发颈部切除）
+	// surgery (lower threshold to trigger neck excision)
 	xtpms::SurgeryOptions sopts;
 	sopts.singularityTol = 5.0;
 	bool performed = mesh.surgery(sopts);
@@ -2158,13 +2160,13 @@ TEST(Surgery, NeckMesh_SurgeryAndFill) {
 
 	EXPECT_GT(mesh.n_faces(), 0u);
 	if (performed) {
-		// surgery 后应保留大部分面
+		// Most faces should remain after surgery
 		EXPECT_GT(mesh.n_faces(), 1000u);
 	}
 }
 
 TEST(Surgery, GyroidLowThreshold_SurgeryAndFill) {
-	// remesh 后用低阈值触发 surgery，测试 CGAL 填洞 + bilaplacian 光滑
+	// After remesh, low-threshold surgery to test CGAL hole fill + bilaplacian fairing
 	const Vec3d hp(0.5, 0.5, 0.5);
 	auto mesh = makeClosedGyroid(hp, 16);
 	xtpms::RemeshOptions ropts;
@@ -2191,7 +2193,7 @@ TEST(Surgery, GyroidLowThreshold_SurgeryAndFill) {
 	std::cout << "surgery: performed=" << performed << " nv=" << mesh.n_vertices()
 			  << " nf=" << mesh.n_faces() << " bnd=" << countBoundaryEdges(mesh) << "\n";
 
-	// 低阈值会删较多面，只要不全删就行
+	// Low threshold deletes many faces; just ensure the mesh is not emptied
 	EXPECT_GT(mesh.n_faces(), 0u) << "Surgery should not delete all faces";
 }
 
@@ -2508,7 +2510,7 @@ TEST(Surgery, ExternalMeshFromEnv) {
 }
 
 // ──────────────────────────────────────────────────────────
-// ADC 单元测试
+// ADC unit tests
 // ──────────────────────────────────────────────────────────
 
 TEST(AsymptoticConductivity, GyroidSolveADC) {
@@ -2524,13 +2526,13 @@ TEST(AsymptoticConductivity, GyroidSolveADC) {
 	Eigen::MatrixX3d ulist;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
 
-	// kA 应该是对称正半定的，对角线在 (0, 1) 范围内
+	// kA should be symmetric positive semi-definite with diagonals in (0, 1)
 	std::cout << "kA =\n" << kA << "\n";
 	for (int i = 0; i < 3; ++i) {
 		EXPECT_GT(kA(i, i), 0.0) << "kA diagonal should be positive";
 		EXPECT_LT(kA(i, i), 1.0) << "kA diagonal should be < 1";
 	}
-	// 对称性
+	// Symmetry
 	for (int i = 0; i < 3; ++i) {
 		for (int j = 0; j < i; ++j) {
 			EXPECT_NEAR(kA(i, j), kA(j, i), 1e-10) << "kA should be symmetric";
@@ -2574,7 +2576,7 @@ TEST(FundamentalForms, FaceFrame_UnitTriangle) {
 }
 
 TEST(FundamentalForms, Compile1ring_FlatPlane) {
-	// 平面上的正六边形 1-ring：H=0, K=0
+	// Regular hexagonal 1-ring in a plane: H=0, K=0
 	Eigen::Vector3d center(0, 0, 0);
 	std::vector<Eigen::Vector3d> ring;
 	for (int i = 0; i < 6; ++i) {
@@ -2589,12 +2591,12 @@ TEST(FundamentalForms, Compile1ring_FlatPlane) {
 }
 
 TEST(FundamentalForms, SecondFundamentalForm_Flat) {
-	// 平面三角形 + 平面法向：II 应为 0
+	// Planar triangle + planar normals: II should be 0
 	Eigen::Matrix3d tri;
 	tri.col(0) = Eigen::Vector3d(0, 0, 0);
 	tri.col(1) = Eigen::Vector3d(1, 0, 0);
 	tri.col(2) = Eigen::Vector3d(0.5, 0.866, 0);
-	// 所有顶点法向均为 (0,0,1)
+	// All vertex normals are (0,0,1)
 	xtpms::Compile1ring v0, v1, v2;
 	v0.nv = v1.nv = v2.nv = Eigen::Vector3d(0, 0, 1);
 	auto be = xtpms::secondFundamentalFormEdge(tri, v0, v1, v2);
@@ -2614,11 +2616,11 @@ TEST(FundamentalForms, StrainMatrix_Invertible) {
 }
 
 TEST(FundamentalForms, Compile1ring_Sphere) {
-	// 球面上的 1-ring：H ≈ 1/R, K ≈ 1/R^2
+	// 1-ring on a sphere: H ≈ 1/R, K ≈ 1/R^2
 	const double R = 2.0;
-	Eigen::Vector3d center(0, 0, R); // 北极
+	Eigen::Vector3d center(0, 0, R); // north pole
 	std::vector<Eigen::Vector3d> ring;
-	const double dphi = 0.1; // 约 5.7 度
+	const double dphi = 0.1; // ~5.7 degrees
 	for (int i = 0; i < 6; ++i) {
 		double theta = i * M_PI / 3.0;
 		ring.push_back(Eigen::Vector3d(R * std::sin(dphi) * std::cos(theta),
@@ -2626,13 +2628,13 @@ TEST(FundamentalForms, Compile1ring_Sphere) {
 									   R * std::cos(dphi)));
 	}
 	xtpms::Compile1ring cr(center, ring);
-	// H 的符号取决于法向约定；球面 |H| = 1/R
+	// Sign of H depends on normal convention; on a sphere |H| = 1/R
 	EXPECT_NEAR(std::abs(cr.H), 1.0 / R, 0.1) << "Sphere |mean curvature| should be ~1/R";
 	EXPECT_NEAR(cr.K, 1.0 / (R * R), 0.1) << "Sphere Gauss curvature should be ~1/R^2";
 }
 
 TEST(AsymptoticConductivity, NonUniformPeriod_ADC) {
-	// 三轴不等周期的 Gyroid，验证 kA 的计算
+	// Gyroid with unequal periods; verify kA
 	const Vec3d hp(0.5, 0.7, 0.4);
 	auto mesh = makeClosedGyroid(hp, 20);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
@@ -2650,28 +2652,28 @@ TEST(AsymptoticConductivity, NonUniformPeriod_ADC) {
 
 	OpenMesh::IO::write_mesh(mesh, "gyroid_triaxis_adc.obj");
 
-	// Gyroid 的 APAC 理论值为 2/3，非均匀周期下因为离散化精度可能偏离
-	// 但各轴 kA 分量应该不同（反映周期不等性），且 APAC 仍接近 2/3
+	// Gyroid APAC is theoretically 2/3; non-uniform periods may deviate due to discretization
+	// Axis components should differ (unequal periods) while APAC stays near 2/3
 	EXPECT_NEAR(apac, 2.0 / 3.0, 0.05) << "APAC should be near 2/3 for Gyroid";
 	EXPECT_GT(kA(0, 0), 0.0);
 	EXPECT_GT(kA(1, 1), 0.0);
 	EXPECT_GT(kA(2, 2), 0.0);
-	// 非均匀周期下对角线不应完全相等
+	// Diagonals should not be identical under non-uniform periods
 	EXPECT_GT(std::abs(kA(0, 0) - kA(1, 1)), 0.01) << "Non-uniform period should break isotropy";
-	// 对称性
+	// Symmetry
 	for (int i = 0; i < 3; ++i)
 		for (int j = 0; j < i; ++j)
 			EXPECT_NEAR(kA(i, j), kA(j, i), 1e-8);
 }
 
 TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
-	// 三轴不等周期的 Gyroid，用 apac 目标做优化，开启 remesh + surgery
+	// Unequal-period Gyroid optimized for apac with remesh + surgery
 	const Vec3d hp(0.5, 0.7, 0.4);
 	auto mesh = makeClosedGyroid(hp, 20);
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
 	ASSERT_GT(mesh.n_faces(), 100u);
 
-	// 优化前的 kA
+	// kA before optimization
 	double apac_before;
 	{
 		auto geom = xtpms::computeVertexGeometry(mesh);
@@ -2684,7 +2686,7 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 		mesh.saveUnitCell("tailor_apac_triaxis_before.obj");
 	}
 
-	// 优化
+	// Optimize
 	xtpms::TailorADCOptions opts;
 	opts.objectiveType = "apac";
 	opts.maxIter = 50;
@@ -2704,7 +2706,7 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 
 	xtpms::tailorADC(mesh, opts);
 
-	// 用最后一组参数的结果做后续检查
+	// Use the last parameter set for follow-up checks
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
@@ -2715,7 +2717,7 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 	std::cout << "APAC = " << apac_after << "\n";
 	std::cout << "APAC change: " << apac_before << " -> " << apac_after << "\n";
 
-	// 曲率分布统计
+	// Curvature distribution statistics
 	{
 		double maxH = 0, maxK = 0, maxTotalK = 0;
 		double sumH = 0, sumK = 0, sumTotalK = 0;
@@ -2736,7 +2738,7 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 		std::cout << "|K|:  max=" << maxK << " avg=" << sumK / nvv << "\n";
 		std::cout << "|4H²-2K|: max=" << maxTotalK << " avg=" << sumTotalK / nvv << "\n";
 
-		// 自适应目标边长分布
+		// Adaptive target edge-length distribution
 		double flatLen = opts.remeshOpts.targetLength;
 		if (flatLen < 0) {
 			double totalEdgeLen = 0;
@@ -2758,7 +2760,7 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 		double minTarget = 1e30, maxTarget = 0, sumTarget = 0;
 		int edgeCnt2 = 0;
 		for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
-			// 简单估算：用两端点的平均 totalK
+			// Simple estimate: average totalK of the two endpoints
 			auto he = mesh.halfedge_handle(*e, 0);
 			int v0 = mesh.from_vertex_handle(he).idx();
 			int v1 = mesh.to_vertex_handle(he).idx();
@@ -2776,7 +2778,7 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 		std::cout << "adaptive target: min=" << minTarget << " max=" << maxTarget
 				  << " avg=" << sumTarget / edgeCnt2 << "\n";
 
-		// 实际边长分布
+		// Actual edge-length distribution
 		double minEdge = 1e30, maxEdge = 0, sumEdge = 0;
 		for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e) {
 			auto he = mesh.halfedge_handle(*e, 0);
@@ -2793,7 +2795,7 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 
 	mesh.saveUnitCell("tailor_apac_triaxis_after.obj");
 
-	// Post MCF smooth：纯 MCF 跑若干步看效果
+	// Post MCF smooth: run pure MCF for a few steps
 	{
 		std::cout << "\n=== Post MCF smooth ===\n";
 		auto geomMcf = xtpms::computeVertexGeometry(mesh);
@@ -2827,7 +2829,7 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 		std::cout << "  Final APAC after MCF = " << kFinal.trace() / 3.0 << "\n";
 	}
 
-	// splitUnitCell 测试
+	// splitUnitCell test
 	{
 		int nvBefore = static_cast<int>(mesh.n_vertices());
 		int nfBefore = static_cast<int>(mesh.n_faces());
@@ -2855,14 +2857,14 @@ TEST(AsymptoticConductivity, TailorAPAC_NonUniformPeriod) {
 }
 
 TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
-	// 加三周期扰动的 Schwarz P：不再是极小曲面
+	// Triply periodic perturbation of Schwarz P: no longer a minimal surface
 	const Vec3d hp(1.0, 1.0, 1.0);
 	const double Lx = 2.0, Ly = 2.0, Lz = 2.0;
 	auto src = makeTPMSMC(
 		hp,
 		[Lx, Ly, Lz](double x, double y, double z) {
 			double px = 2.0 * M_PI * x / Lx, py = 2.0 * M_PI * y / Ly, pz = 2.0 * M_PI * z / Lz;
-			// Schwarz P + 三周期扰动
+			// Schwarz P + triply periodic perturbation
 			double base = std::cos(px) + std::cos(py) + std::cos(pz);
 			double perturb =
 				0.6 * std::sin(2 * px) * std::sin(py) + 0.5 * std::cos(3 * py) * std::sin(pz) +
@@ -2875,7 +2877,7 @@ TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
 	ASSERT_EQ(countBoundaryEdges(mesh), 0);
 	ASSERT_GT(mesh.n_faces(), 100u);
 
-	// 优化前
+	// Before optimization
 	double apac_before;
 	{
 		auto geom = xtpms::computeVertexGeometry(mesh);
@@ -2888,7 +2890,7 @@ TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
 		mesh.saveUnitCell("perturbed_p_before.obj");
 	}
 
-	// 优化
+	// Optimize
 	xtpms::TailorADCOptions opts;
 	opts.objectiveType = "apac";
 	opts.maxIter = 200;
@@ -2902,14 +2904,14 @@ TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
 	opts.remeshOpts.innerIter = 3;
 
 	opts.enableSurgery = false;
-	opts.mcfWeight = 0.1; // 均曲率流正则化
+	opts.mcfWeight = 0.1; // mean-curvature-flow regularization
 
 	opts.outputDir = ".";
 	opts.saveInterval = 1;
 
 	xtpms::tailorADC(mesh, opts);
 
-	// 优化后
+	// After optimization
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
@@ -2927,7 +2929,7 @@ TEST(AsymptoticConductivity, TailorAPAC_PerturbedP) {
 }
 
 TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
-	// 从文件读取 rod3-2.obj，周期 [0,2]^3
+	// Load rod3-2.obj from file; period [0,2]^3
 	namespace fs = std::filesystem;
 	const fs::path meshPath(R"(tests/data/rod3-2.obj)");
 	if (!fs::exists(meshPath)) {
@@ -2938,8 +2940,8 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 	ASSERT_TRUE(OpenMesh::IO::read_mesh(src, meshPath.string()));
 	ASSERT_GT(src.n_vertices(), 0u);
 
-	const Vec3d hp(1.0, 1.0, 1.0); // 半周期 = 1，全周期 = 2
-	// 先输出原始网格（merge 前）
+	const Vec3d hp(1.0, 1.0, 1.0); // half-period = 1, full period = 2
+	// Dump original mesh (before merge)
 	OpenMesh::IO::write_mesh(src, "rod3_raw.obj");
 
 	auto mesh = makeClosedTPMS(hp, src);
@@ -2948,7 +2950,7 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 			  << " bnd=" << countBoundaryEdges(mesh) << "\n";
 	mesh.saveUnitCell("rod3_after_merge.obj");
 
-	// 预处理：smooth + remesh 循环平滑连接处
+	// Preprocess: smooth + remesh loop to fair junctions
 	std::cout << "=== Pre-smoothing ===\n";
 	for (int pre = 0; pre < 5; ++pre) {
 		// MCF smooth
@@ -2986,7 +2988,7 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 	}
 	mesh.saveUnitCell("rod3_pre_smoothed.obj");
 
-	// 优化前
+	// Before optimization
 	double apac_before;
 	{
 		auto geom = xtpms::computeVertexGeometry(mesh);
@@ -2998,7 +3000,7 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 		std::cout << "APAC = " << apac_before << "\n";
 	}
 
-	// 优化（和 NonUniformPeriod 相同参数）
+	// Optimize (same parameters as NonUniformPeriod)
 	xtpms::TailorADCOptions opts;
 	opts.objectiveType = "apac";
 	opts.maxIter = 100;
@@ -3022,7 +3024,7 @@ TEST(AsymptoticConductivity, TailorAPAC_Rod3) {
 
 	xtpms::tailorADC(mesh, opts);
 
-	// 优化后
+	// After optimization
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
 	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);

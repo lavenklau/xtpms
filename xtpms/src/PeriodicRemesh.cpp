@@ -102,12 +102,18 @@ bool isDelaunay(const PeriodicTriMesh& m, EH eh) {
 
 	// angle at v2 in triangle (v0, v1, v2)
 	Vec3d e20 = p0 - p2, e21 = p1 - p2;
-	double cos2 = static_cast<double>(e20 | e21) / (e20.norm() * e21.norm());
+	double l20 = e20.norm(), l21 = e21.norm();
+	if (l20 < 1e-15 || l21 < 1e-15)
+		return true; // degenerate (zero-length) edge: skip flipping instead of feeding NaN to acos
+	double cos2 = static_cast<double>(e20 | e21) / (l20 * l21);
 	double a2 = std::acos(std::clamp(cos2, -1.0, 1.0));
 
 	// angle at v3 in triangle (v1, v0, v3)
 	Vec3d e30 = p0 - p3, e31 = p1 - p3;
-	double cos3 = static_cast<double>(e30 | e31) / (e30.norm() * e31.norm());
+	double l30 = e30.norm(), l31 = e31.norm();
+	if (l30 < 1e-15 || l31 < 1e-15)
+		return true;
+	double cos3 = static_cast<double>(e30 | e31) / (l30 * l31);
 	double a3 = std::acos(std::clamp(cos3, -1.0, 1.0));
 
 	return (a2 + a3) <= M_PI + 1e-8;
@@ -204,11 +210,16 @@ double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh, double flatLength, 
 		} else {
 			HH he_start = m.halfedge_handle(v[s]);
 			HH he = he_start;
-			do {
+			const int valence = static_cast<int>(m.valence(v[s]));
+			ring.reserve(static_cast<std::size_t>(valence));
+			const int maxSteps = 2 * valence + 100;
+			for (int step = 0; step < maxSteps; ++step) {
 				Vec3d ev = makePeriod(m.point(m.to_vertex_handle(he)) - m.point(v[s]), hp);
 				ring.push_back(center + Eigen::Vector3d(ev[0], ev[1], ev[2]));
 				he = m.opposite_halfedge_handle(m.prev_halfedge_handle(he));
-			} while (he != he_start && ring.size() < 30);
+				if (he == he_start)
+					break;
+			}
 		}
 		if (ring.size() >= 3) {
 			xtpms::Compile1ring vring(center, ring);

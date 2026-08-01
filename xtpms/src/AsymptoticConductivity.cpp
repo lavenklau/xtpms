@@ -375,6 +375,13 @@ double ConvergenceChecker::estimateNextStep(double tmax) const {
 void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 	ConvergenceChecker conv(opts.convergeTol, opts.stepTol * opts.maxStep);
 
+	// Objective evaluator: custom callback (set by the CLI for every objective) wins; the string
+	// objectiveType remains as a library-API fallback.
+	auto evalObj = [&](const Eigen::Matrix3d& kA) {
+		return opts.customObjective ? opts.customObjective(kA)
+									: evaluateADCObjective(opts.objectiveType, kA);
+	};
+
 	RemeshOptions remeshOpts = opts.remeshOpts;
 	if (opts.enableRemesh && remeshOpts.targetLength < 0) {
 		const auto userFrac = opts.remeshOpts.maxEuclideanEdgeFracOfMinPeriod;
@@ -436,13 +443,13 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 	double bestObjValue = -std::numeric_limits<double>::infinity();
 	bool haveBest = false;
 	auto saveBest = [&](double objVal, const Eigen::Matrix3d& kA) {
-		// Physical validity check: APAC=kA_trace/3 should be in [0, 1], each diagonal element
-		// should also be in [0, 1] Out-of-range values are typically numerical artifacts from
-		// sliver triangles making L non-PSD; reject them
-		if (objVal <= 0 || objVal >= 1.0)
+		// Reject only non-finite objectives / conductivity diagonals (sliver-induced NaN/Inf).
+		// Do not clamp by objective range: custom expressions (iso, iso+k00, squared residuals)
+		// routinely leave (0, 1).
+		if (!std::isfinite(objVal))
 			return;
 		for (int i = 0; i < 3; ++i) {
-			if (kA(i, i) < -1e-6 || kA(i, i) > 1.0 + 1e-6)
+			if (!std::isfinite(kA(i, i)))
 				return;
 		}
 		if (objVal > bestObjValue) {
@@ -599,16 +606,14 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		}
 
 		// [6] objective
-		ADCObjective obj = evaluateADCObjective(opts.objectiveType, kA);
-		if (!std::isnan(obj.value) && obj.value > 0) {
-			saveBest(obj.value, kA);
-		}
-		if (std::isnan(obj.value) || obj.value <= 0) {
-			std::cerr << "tailorADC abort: invalid objective (" << obj.value << ") at iter " << iter
-					  << "\n";
+		ADCObjective obj = evalObj(kA);
+		if (!std::isfinite(obj.value)) {
+			std::cerr << "tailorADC abort: non-finite objective (" << obj.value << ") at iter "
+					  << iter << "\n";
 			restoreBest();
 			break;
 		}
+		saveBest(obj.value, kA);
 
 		// [7] sensitivity
 		auto sens = computeSensitivity(mesh, geom, ulist);
@@ -738,9 +743,9 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 				auto trialGeom = computeVertexGeometry(mesh);
 				Eigen::MatrixX3d trialU;
 				Eigen::Matrix3d trialKA = solveAsymptoticConductivity(mesh, trialGeom, trialU);
-				ADCObjective trialObj = evaluateADCObjective(opts.objectiveType, trialKA);
+				ADCObjective trialObj = evalObj(trialKA);
 
-				if (!std::isnan(trialObj.value) && trialObj.value > obj.value) {
+				if (std::isfinite(trialObj.value) && trialObj.value > obj.value) {
 					// Accept this step size
 					break;
 				}

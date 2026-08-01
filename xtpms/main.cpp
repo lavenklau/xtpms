@@ -1,12 +1,11 @@
 #include <CLI/CLI.hpp>
 #include <OpenMesh/Core/IO/MeshIO.hh>
 #include <iostream>
-#include <fstream>
-#include <iomanip>
 #include <sstream>
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <random>
 
 #include "PeriodicMesh.h"
@@ -29,14 +28,24 @@ extern "C" {
 
 using Vec3d = xtpms::PeriodicTriMesh::Vec3d;
 
-static Vec3d parseVec3(const std::string& s) {
+static bool parseVec3(const std::string& s, Vec3d& out) {
 	double x = 0, y = 0, z = 0;
-	char sep;
+	char sep1 = 0, sep2 = 0;
 	std::istringstream iss(s);
-	iss >> x >> sep >> y >> sep >> z;
-	return Vec3d(static_cast<xtpms::DefaultTriMesh::Scalar>(x),
-				 static_cast<xtpms::DefaultTriMesh::Scalar>(y),
-				 static_cast<xtpms::DefaultTriMesh::Scalar>(z));
+	if (!(iss >> x >> sep1 >> y >> sep2 >> z) || sep1 != ',' || sep2 != ',') {
+		std::cerr << "Error: invalid half-period '" << s << "' (expected x,y,z)\n";
+		return false;
+	}
+	// Reject trailing junk (e.g. "1,1,1foo")
+	char extra = 0;
+	if (iss >> extra) {
+		std::cerr << "Error: invalid half-period '" << s << "' (expected x,y,z)\n";
+		return false;
+	}
+	out = Vec3d(static_cast<xtpms::DefaultTriMesh::Scalar>(x),
+				static_cast<xtpms::DefaultTriMesh::Scalar>(y),
+				static_cast<xtpms::DefaultTriMesh::Scalar>(z));
+	return true;
 }
 
 // CGAL isotropic remesh on OpenMesh (via conversion)
@@ -127,7 +136,9 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 				std::cerr << "Error: closed periodic mesh requires --half-period\n";
 				return false;
 			}
-			Vec3d hp = parseVec3(hpStr);
+			Vec3d hp;
+			if (!parseVec3(hpStr, hp))
+				return false;
 			std::cout << "Input is closed periodic mesh, skipping remesh/merge\n";
 			std::cout << "Half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
 			for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
@@ -199,7 +210,8 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 	Vec3d hp;
 	bool specified = !hpStr.empty() && hpStr != "auto";
 	if (specified) {
-		hp = parseVec3(hpStr);
+		if (!parseVec3(hpStr, hp))
+			return false;
 		std::cout << "Target half-period: " << hp[0] << ", " << hp[1] << ", " << hp[2] << "\n";
 	} else {
 		for (int i = 0; i < 3; ++i)
@@ -283,7 +295,15 @@ saveMesh(xtpms::PeriodicTriMesh& mesh, const std::string& outputFile, bool noSpl
 struct ExprObjective {
 	std::string expr;
 	double k00 = 0, k01 = 0, k02 = 0, k10 = 0, k11 = 0, k12 = 0, k20 = 0, k21 = 0, k22 = 0;
+	double apac = 0; // trace(kA)/3, recomputed in setKA
+	double iso = 0;	 // 1 - (lambda_max - lambda_min)^2, recomputed in setKA
 	te_expr* compiled = nullptr;
+
+	ExprObjective() = default;
+	ExprObjective(const ExprObjective&) = delete;
+	ExprObjective& operator=(const ExprObjective&) = delete;
+	ExprObjective(ExprObjective&&) = delete;
+	ExprObjective& operator=(ExprObjective&&) = delete;
 
 	bool compile() {
 		te_variable vars[] = {
@@ -296,9 +316,11 @@ struct ExprObjective {
 			{"k20", &k20},
 			{"k21", &k21},
 			{"k22", &k22},
+			{"apac", &apac},
+			{"iso", &iso},
 		};
 		int err = 0;
-		compiled = te_compile(expr.c_str(), vars, 9, &err);
+		compiled = te_compile(expr.c_str(), vars, 11, &err);
 		if (!compiled) {
 			std::cerr << "Error: cannot parse expression '" << expr << "' at position " << err
 					  << "\n";
@@ -317,6 +339,11 @@ struct ExprObjective {
 		k20 = kA(2, 0);
 		k21 = kA(2, 1);
 		k22 = kA(2, 2);
+		apac = kA.trace() / 3.0;
+		Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(kA);
+		Eigen::Vector3d lambda = eig.eigenvalues();
+		double spread = lambda[2] - lambda[0];
+		iso = 1.0 - spread * spread;
 	}
 
 	double eval() { return te_eval(compiled); }
@@ -437,124 +464,40 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 
 	const std::string finalPath = outputDir + "/final.obj";
 
-	bool isBuiltin = (objective == "apac" || objective == "k00" || objective == "k11" ||
-					  objective == "k22" || objective == "iso");
+	// All objectives (apac/k00/k11/k22/iso and arbitrary combinations) go through tinyexpr.
+	// Numerical gradient (eps=1e-7 central differences) is ~12 evals/iter — negligible vs ADC
+	// solve — and keeps a single code path.
+	ExprObjective exprObj;
+	exprObj.expr = objective;
+	if (!exprObj.compile())
+		return 1;
+	std::cout << "Objective: " << objective << "\n";
 
-	if (isBuiltin) {
-		xtpms::TailorADCOptions opts;
-		opts.objectiveType = objective;
-		opts.maxIter = maxIter;
-		opts.maxStep = maxStep;
-		opts.mcfWeight = mcfWeight;
-		opts.convergeTol = convergeTol;
-		opts.nfLimit = nfLimit;
-		opts.preconditionStrength = precondStrength;
-		opts.enableRemesh = true;
-		opts.remeshOpts.adaptiveEps = adaptiveEps;
-		opts.enableSurgery = enableSurgery;
-		opts.surgeryStartIter = surgeryStart;
-		opts.surgeryInterval = surgeryInterval;
-		opts.surgeryOpts.singularityTol = surgeryTol;
-		opts.surgeryOpts.surgeryType = 2;
-		opts.outputDir = outputDir;
-		opts.saveInterval = 1;
-		opts.logMeanCurvatureInterval = logMeanCurvatureInterval;
-		xtpms::tailorADC(mesh, opts);
-	} else {
-		// Custom expression objective
-		ExprObjective exprObj;
-		exprObj.expr = objective;
-		if (!exprObj.compile())
-			return 1;
-		std::cout << "Custom objective: " << objective << "\n";
-
-		xtpms::RemeshOptions remeshOpts;
-		remeshOpts.adaptiveEps = adaptiveEps;
-
-		for (int iter = 0; iter < maxIter; ++iter) {
-			if (iter > 0) {
-				if (!xtpms::delaunayRemesh(mesh, remeshOpts)) {
-					std::cerr << "optimize abort: remesh excessive Euclidean edge at iter " << iter
-							  << "\n";
-					break;
-				}
-				bool hasBnd = false;
-				for (auto e = mesh.edges_begin(); e != mesh.edges_end() && !hasBnd; ++e)
-					if (mesh.is_boundary(*e))
-						hasBnd = true;
-				if (hasBnd)
-					mesh.mergePeriodBoundary();
-			}
-
-			auto geom = xtpms::computeVertexGeometry(mesh);
-			int nv = static_cast<int>(mesh.n_vertices());
-
-			if (logMeanCurvatureInterval > 0 && iter % logMeanCurvatureInterval == 0) {
-				const std::string path =
-					outputDir + "/mean_curvature_" + std::to_string(iter) + ".txt";
-				std::ofstream out(path);
-				if (!out) {
-					std::cerr << "[optimize] failed to write " << path << "\n";
-				} else {
-					out << std::setprecision(17);
-					for (int i = 0; i < nv; ++i)
-						out << geom.vrings[static_cast<std::size_t>(i)].H << "\n";
-					std::cout << "[optimize] wrote " << path << " (nv=" << nv << ")\n";
-				}
-			}
-
-			Eigen::MatrixX3d ulist;
-			Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
-			exprObj.setKA(kA);
-			double objVal = exprObj.eval();
-
-			auto sens = xtpms::computeSensitivity(mesh, geom, ulist);
-			double As = geom.vertexAreas.sum();
-			for (int i = 0; i < nv; ++i) {
-				double ai = geom.vertexAreas[i];
-				if (ai > 1e-15) {
-					sens.vSens.row(i) /= ai;
-					sens.aSens[i] /= ai;
-				}
-			}
-			auto kAv = xtpms::toVoigt(kA);
-			kAv.tail<3>() /= 2.0;
-			auto grad6 = exprObj.gradient(kA);
-			Eigen::VectorXd dfdvn =
-				(sens.vSens / As - sens.aSens * kAv.transpose() / As) * (-grad6);
-
-			auto L = xtpms::assembleLaplacian(mesh, geom.cotWeights);
-			const double c = std::clamp(precondStrength, 0.0, 20.0);
-			Eigen::SparseMatrix<double> G = -c * L;
-			for (int i = 0; i < nv; ++i)
-				G.coeffRef(i, i) += geom.vertexAreas[i];
-			Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(G);
-			Eigen::VectorXd dn =
-				-solver.solve(geom.vertexAreas.cwiseProduct((c + 1.0) * dfdvn).eval());
-
-			for (auto v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
-				int vi = (*v).idx();
-				Eigen::Vector3d disp = dn[vi] * Eigen::Vector3d(geom.vertexNormals[vi][0],
-																geom.vertexNormals[vi][1],
-																geom.vertexNormals[vi][2]);
-				if (mcfWeight > 0)
-					disp += mcfWeight * Eigen::Vector3d(geom.vrings[vi].Lx[0],
-														geom.vrings[vi].Lx[1],
-														geom.vrings[vi].Lx[2]);
-				auto p = mesh.point(*v);
-				mesh.set_point(
-					*v,
-					Vec3d(p[0] + static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep * disp[0]),
-						  p[1] + static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep * disp[1]),
-						  p[2] + static_cast<xtpms::DefaultTriMesh::Scalar>(maxStep * disp[2])));
-			}
-
-			std::cout << "iter=" << iter << " obj=" << objVal << " nv=" << nv
-					  << " nf=" << mesh.n_faces() << "\n";
-
-			mesh.saveUnitCell(outputDir + "/iter_" + std::to_string(iter) + ".obj");
-		}
-	}
+	xtpms::TailorADCOptions opts;
+	opts.maxIter = maxIter;
+	opts.maxStep = maxStep;
+	opts.mcfWeight = mcfWeight;
+	opts.convergeTol = convergeTol;
+	opts.nfLimit = nfLimit;
+	opts.preconditionStrength = precondStrength;
+	opts.enableRemesh = true;
+	opts.remeshOpts.adaptiveEps = adaptiveEps;
+	opts.enableSurgery = enableSurgery;
+	opts.surgeryStartIter = surgeryStart;
+	opts.surgeryInterval = surgeryInterval;
+	opts.surgeryOpts.singularityTol = surgeryTol;
+	opts.surgeryOpts.surgeryType = 2;
+	opts.outputDir = outputDir;
+	opts.saveInterval = 1;
+	opts.logMeanCurvatureInterval = logMeanCurvatureInterval;
+	opts.customObjective = [&exprObj](const Eigen::Matrix3d& kA) {
+		exprObj.setKA(kA);
+		xtpms::ADCObjective obj;
+		obj.value = exprObj.eval();
+		obj.gradient = exprObj.gradient(kA);
+		return obj;
+	};
+	xtpms::tailorADC(mesh, opts);
 
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
@@ -821,7 +764,9 @@ int cmdSample(const std::string& expression,
 			  bool randomMode,
 			  int kmax,
 			  double decay) {
-	Vec3d hp = parseVec3(hpStr);
+	Vec3d hp;
+	if (!parseVec3(hpStr, hp))
+		return 1;
 	double Lx = 2.0 * hp[0], Ly = 2.0 * hp[1], Lz = 2.0 * hp[2];
 
 	std::function<double(double, double, double)> levelSet;
@@ -841,27 +786,36 @@ int cmdSample(const std::string& expression,
 		// Parse as tinyexpr expression with variables x, y, z
 		// Expression assumes 2π-periodic: e.g. cos(x)+cos(y)+cos(z)
 		// Auto-scale: x_expr = 2π * x_physical / period
-		double vx = 0, vy = 0, vz = 0;
-		double pi_val = M_PI;
+		// Shared context owns the compiled expression (RAII te_free) so the lambda is safe even
+		// if it outlives this scope.
+		struct ExprCtx {
+			double vx = 0, vy = 0, vz = 0, pi_val = M_PI;
+			te_expr* expr = nullptr;
+			~ExprCtx() {
+				if (expr)
+					te_free(expr);
+			}
+		};
+		auto ctx = std::make_shared<ExprCtx>();
 		te_variable vars[] = {
-			{"x", &vx},
-			{"y", &vy},
-			{"z", &vz},
-			{"pi", &pi_val},
+			{"x", &ctx->vx},
+			{"y", &ctx->vy},
+			{"z", &ctx->vz},
+			{"pi", &ctx->pi_val},
 		};
 		int err = 0;
-		te_expr* compiled = te_compile(expression.c_str(), vars, 4, &err);
-		if (!compiled) {
+		ctx->expr = te_compile(expression.c_str(), vars, 4, &err);
+		if (!ctx->expr) {
 			std::cerr << "Error: cannot parse expression '" << expression << "' at position " << err
 					  << "\n";
 			return 1;
 		}
-		levelSet = [compiled, &vx, &vy, &vz, Lx, Ly, Lz](double x, double y, double z) mutable {
+		levelSet = [ctx, Lx, Ly, Lz](double x, double y, double z) {
 			// Scale physical [0, L] → expression [0, 2π]
-			vx = 2 * M_PI * x / Lx;
-			vy = 2 * M_PI * y / Ly;
-			vz = 2 * M_PI * z / Lz;
-			return te_eval(compiled);
+			ctx->vx = 2 * M_PI * x / Lx;
+			ctx->vy = 2 * M_PI * y / Ly;
+			ctx->vz = 2 * M_PI * z / Lz;
+			return te_eval(ctx->expr);
 		};
 		std::cout << "Expression: " << expression << " (2pi-periodic, scaled to period " << Lx
 				  << "x" << Ly << "x" << Lz << ")\n";
@@ -919,7 +873,10 @@ int main(int argc, char** argv) {
 	double o_surgTol = 25.0, o_ctol = 1e-3, o_aeps = 1.0;
 	int o_seedRes = 20, o_seedKmax = 2;
 	double o_seedDecay = 2.0;
-	cmdO->add_option("--objective", o_obj, "apac|k00|k11|k22|iso or expression")
+	cmdO->add_option("--objective",
+					 o_obj,
+					 "Expression over k00..k22, apac, iso (e.g. \"apac\", \"iso+k00\", "
+					 "\"(k00-k11)^2+(k11-k22)^2\")")
 		->default_val("apac");
 	cmdO->add_option("-i,--input", o_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 	cmdG->add_option("-i,--input",
@@ -1002,7 +959,9 @@ int main(int argc, char** argv) {
 			o_obj = "apac"; // generate always uses apac objective
 		xtpms::PeriodicTriMesh mesh;
 		if (o_in.empty()) {
-			Vec3d hp = (hpStr.empty() || hpStr == "auto") ? parseVec3("1,1,1") : parseVec3(hpStr);
+			Vec3d hp;
+			if (!parseVec3((hpStr.empty() || hpStr == "auto") ? std::string("1,1,1") : hpStr, hp))
+				return 1;
 			std::cout << "No seed mesh given; sampling random triperiodic surface "
 						 "(half-period "
 					  << hp[0] << "," << hp[1] << "," << hp[2] << ")\n";

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 namespace xtpms {
 
@@ -27,15 +28,14 @@ using FH = PeriodicTriMesh::FaceHandle;
 Vec3d makePeriod(const Vec3d& v, const Vec3d& hp) {
 	Vec3d out = v;
 	for (int i = 0; i < 3; ++i) {
-		const double period = 2.0 * static_cast<double>(hp[i]);
-		if (period <= 0.0)
+		const double step = 2.0 * static_cast<double>(hp[i]);
+		if (!(step > 0.0))
 			continue;
-		double vi = static_cast<double>(out[i]);
-		if (vi < -static_cast<double>(hp[i]))
-			vi += period;
-		else if (vi > static_cast<double>(hp[i]))
-			vi -= period;
-		out[i] = static_cast<DefaultTriMesh::Scalar>(vi);
+		// Same floor-based wrap as PeriodicTriMesh::wrapVector: maps any input into [-hp, hp),
+		// unlike the old single ±step correction which was wrong beyond one period.
+		const double n =
+			std::floor((static_cast<double>(v[i]) + static_cast<double>(hp[i])) / step);
+		out[i] = static_cast<DefaultTriMesh::Scalar>(static_cast<double>(v[i]) - n * step);
 	}
 	return out;
 }
@@ -98,14 +98,28 @@ void getPeriodicRing(const PeriodicTriMesh& mesh,
 		return;
 	}
 
-	// Face traversal ensures CCW order
+	// Face traversal ensures CCW order. Reserve the full valence and detect truncation: a silently
+	// truncated ring would feed wrong curvature/area estimates downstream.
+	int valence = 0;
+	for (auto voh_it = mesh.cvoh_iter(vh); voh_it.is_valid(); ++voh_it)
+		++valence;
+	outRing.reserve(static_cast<std::size_t>(valence));
+
 	HH he_start = mesh.halfedge_handle(vh);
 	HH he = he_start;
-	do {
+	// Guard against non-manifold vertices where the face traversal never returns to he_start.
+	const int maxSteps = 2 * valence + 100;
+	for (int step = 0; step < maxSteps; ++step) {
 		VH vn = mesh.to_vertex_handle(he);
 		outRing.push_back(outCenter + toEig(makePeriod(mesh.point(vn) - mesh.point(vh), hp)));
 		he = mesh.opposite_halfedge_handle(mesh.prev_halfedge_handle(he));
-	} while (he != he_start && outRing.size() < 30);
+		if (he == he_start)
+			break;
+	}
+	if (static_cast<int>(outRing.size()) != valence) {
+		std::cerr << "warning: getPeriodicRing truncated ring of v" << vh.idx() << " ("
+				  << outRing.size() << "/" << valence << "), curvature may be inaccurate\n";
+	}
 }
 
 // ── Compile1ring ───────────────────────────────────────────

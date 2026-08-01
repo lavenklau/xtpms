@@ -49,7 +49,7 @@ TEST(AABBTree_TriMesh, QueryAtVertex_ZeroDistance) {
 }
 
 TEST(AABBTree_TriMesh, TwoTriangles_PicksNearestPrimitive) {
-	// 三角形 0：z=0；三角形 1：z=10
+	// Triangle 0 at z=0; triangle 1 at z=10
 	std::vector<P> v{{{0.0, 0.0, 0.0}},
 					 {{1.0, 0.0, 0.0}},
 					 {{0.0, 1.0, 0.0}},
@@ -80,7 +80,7 @@ TEST(AABBTree_TriMesh, ClearThenEmpty) {
 }
 
 TEST(AABBTree_TriMesh, AllDegenerateFaces_EmptyTree) {
-	// 共线三点，三角形退化，应被跳过
+	// Collinear points: degenerate triangle should be skipped
 	std::vector<P> v{{{0.0, 0.0, 0.0}}, {{1.0, 0.0, 0.0}}, {{2.0, 0.0, 0.0}}};
 	std::vector<xtpms::TriMeshFace> f{{{0, 1, 2}}};
 	xtpms::TriMeshAABBTree tree;

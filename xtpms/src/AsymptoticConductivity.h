@@ -10,6 +10,7 @@
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -103,6 +104,10 @@ struct TailorADCOptions {
 	// Laplace weight c in G = A - c L (clamped to [0, 20] in tailorADC); larger → smoother steps
 	double preconditionStrength{1.0};
 	std::string objectiveType{"apac"};
+	// Optional custom objective; when set it takes precedence over objectiveType. The gradient is
+	// the derivative w.r.t. the non-Voigt (shear-unsquared) kA components, matching
+	// computeSensitivity's output convention.
+	std::function<ADCObjective(const Eigen::Matrix3d&)> customObjective;
 	double mcfWeight{0.1}; // mean curvature flow (area regularization) weight
 
 	bool enableRemesh{true};

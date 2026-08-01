@@ -36,7 +36,7 @@ This means: **maximizing APAC is equivalent to generating a TPMS**. Starting fro
 - **Generate TPMS** from arbitrary seed meshes by optimizing APAC
 - **Sample periodic surfaces** from built-in types (Gyroid, Schwarz P, Diamond), custom level set expressions, or random Fourier series
 - **Periodize meshes**: merge periodic boundaries to create topologically closed periodic meshes
-- **Custom objectives**: optimize individual conductivity components (k00, k11, k22) or arbitrary expressions
+- **Custom objectives**: optimize individual conductivity components (k00, k11, k22), APAC, isotropy (iso), or arbitrary expressions over `k00..k22`, `apac`, `iso`
 - **Non-uniform periods**: supports rectangular unit cells, not limited to cubic
 
 ## Building
@@ -96,11 +96,12 @@ Omit `-i` to sample a random triperiodic seed in memory.
 # Maximize APAC (default)
 xtpms optimize -i mesh.obj -o ./out --half-period 1,1,1 --max-iter 100
 
-# Maximize k11 (x-direction conductivity)
+# Maximize k11 (y-direction conductivity)
 xtpms optimize -i mesh.obj -o ./out --objective k11
 
-# Custom expression objective
+# Expression objectives: variables are k00..k22, apac (=trace/3), iso (=1-(λmax-λmin)²)
 xtpms optimize -i mesh.obj -o ./out --objective "(k00-k11)^2+(k11-k22)^2"
+xtpms optimize -i mesh.obj -o ./out --objective "iso+k00"
 
 # Tune optimization parameters
 xtpms optimize -i mesh.obj -o ./iterations \
@@ -152,7 +153,7 @@ Eigen::MatrixX3d u;
 Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, u);
 double apac = kA.trace() / 3.0;  // theoretical max: 2/3
 
-// Optimize
+// Optimize (library API: string objectiveType, or customObjective callback)
 xtpms::TailorADCOptions opts;
 opts.objectiveType = "apac";
 opts.maxIter = 100;

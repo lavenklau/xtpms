@@ -105,7 +105,8 @@ xtpms optimize -i mesh.obj -o ./out --objective "iso+k00"
 
 # Tune optimization parameters
 xtpms optimize -i mesh.obj -o ./iterations \
-    --max-step 1.0 \
+    --max-step 10.0 \
+    --converge-tol 1e-4 \
     --mcf-weight 0.1 \
     --adaptive-eps 1.0 \
     --surgery-tol 25 \

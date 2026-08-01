@@ -867,10 +867,10 @@ int main(int argc, char** argv) {
 		"generate", "Alias for optimize --objective apac (random seed if -i omitted)");
 	std::string o_in, o_dir, o_obj = "apac";
 	int o_iter = 100;
-	double o_step = 1.0, o_mcf = 0.1, o_prec = 1.0;
+	double o_step = 10.0, o_mcf = 0.1, o_prec = 1.0;
 	bool o_nosurg = false, o_nosplit = false;
 	int o_surgStart = 0, o_surgInt = 4, o_nfLimit = 100000, o_logH = 0;
-	double o_surgTol = 25.0, o_ctol = 1e-3, o_aeps = 1.0;
+	double o_surgTol = 25.0, o_ctol = 1e-4, o_aeps = 1.0;
 	int o_seedRes = 20, o_seedKmax = 2;
 	double o_seedDecay = 2.0;
 	cmdO->add_option("--objective",
@@ -889,7 +889,7 @@ int main(int argc, char** argv) {
 			->required();
 		cmd->add_option("--half-period", hpStr);
 		cmd->add_option("--max-iter", o_iter)->default_val(100);
-		cmd->add_option("--max-step", o_step)->default_val(1.0);
+		cmd->add_option("--max-step", o_step)->default_val(10.0);
 		cmd->add_option("--mcf-weight", o_mcf)->default_val(0.1);
 		cmd->add_option("--precondition",
 						o_prec,
@@ -903,7 +903,7 @@ int main(int argc, char** argv) {
 		cmd->add_option("--surgery-tol", o_surgTol)->default_val(25.0);
 		cmd->add_option("--nf-limit", o_nfLimit, "Max face count before abort")
 			->default_val(100000);
-		cmd->add_option("--converge-tol", o_ctol)->default_val(1e-3);
+		cmd->add_option("--converge-tol", o_ctol)->default_val(1e-4);
 		cmd->add_flag("--no-split", o_nosplit);
 		cmd->add_option("--log-mean-curvature",
 						o_logH,

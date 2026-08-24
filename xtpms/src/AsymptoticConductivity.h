@@ -126,6 +126,8 @@ struct TailorADCOptions {
 	// Log per-vertex mean curvature H = |Hv|/(2 As) every N iters after remesh; 0 = off.
 	// Written under outputDir (or "." if outputDir is empty).
 	int logMeanCurvatureInterval{0};
+	// Dump before-surgery mesh (befsur_<iter>.obj) to outputDir; off by default.
+	bool logSurgery{false};
 };
 
 // ADC shape optimization main loop

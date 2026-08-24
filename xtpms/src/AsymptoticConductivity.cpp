@@ -504,6 +504,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 					break;
 				}
 				if (!opts.outputDir.empty()) {
+					if (opts.logSurgery)
+						beforeSurgery.saveUnitCell(opts.outputDir + "/befsur_" + std::to_string(iter) + ".obj");
 					mesh.saveUnitCell(opts.outputDir + "/aftsur_" + std::to_string(iter) + ".obj");
 				}
 				// Reset convergence history after surgery (topology changed)

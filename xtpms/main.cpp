@@ -448,7 +448,8 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 				int nfLimit,
 				double convergeTol,
 				bool noSplit,
-				int logMeanCurvatureInterval) {
+				int logMeanCurvatureInterval,
+				bool logSurgery) {
 	std::cout << "Seed: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 	std::cout << "Output dir: " << outputDir << "\n";
 
@@ -490,6 +491,7 @@ int cmdOptimize(xtpms::PeriodicTriMesh& mesh,
 	opts.outputDir = outputDir;
 	opts.saveInterval = 1;
 	opts.logMeanCurvatureInterval = logMeanCurvatureInterval;
+	opts.logSurgery = logSurgery;
 	opts.customObjective = [&exprObj](const Eigen::Matrix3d& kA) {
 		exprObj.setKA(kA);
 		xtpms::ADCObjective obj;
@@ -868,7 +870,7 @@ int main(int argc, char** argv) {
 	std::string o_in, o_dir, o_obj = "apac";
 	int o_iter = 100;
 	double o_step = 10.0, o_mcf = 0.1, o_prec = 1.0;
-	bool o_nosurg = false, o_nosplit = false;
+	bool o_nosurg = false, o_nosplit = false, o_logSurgery = false;
 	int o_surgStart = 0, o_surgInt = 4, o_nfLimit = 100000, o_logH = 0;
 	double o_surgTol = 25.0, o_ctol = 1e-4, o_aeps = 1.0;
 	int o_seedRes = 20, o_seedKmax = 2;
@@ -909,6 +911,8 @@ int main(int argc, char** argv) {
 						o_logH,
 						"Dump per-vertex mean curvature H every N iters after remesh (0=off)")
 			->default_val(0);
+		cmd->add_flag("--log-surgery", o_logSurgery,
+					  "Dump before-surgery mesh (befsur_*.obj) to output-dir");
 	}
 	// Random-seed controls (used when generate omits -i)
 	cmdG->add_option("-r,--resolution", o_seedRes, "MC resolution for random seed")
@@ -985,7 +989,8 @@ int main(int argc, char** argv) {
 						   o_nfLimit,
 						   o_ctol,
 						   o_nosplit,
-						   o_logH);
+						   o_logH,
+						   o_logSurgery);
 	}
 	if (cmdS->parsed())
 		return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random, s_kmax, s_decay);

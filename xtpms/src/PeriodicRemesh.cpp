@@ -24,24 +24,22 @@ using FH = PeriodicTriMesh::FaceHandle;
 // Periodic edge length
 double periodEdgeLength(const PeriodicTriMesh& m, EH eh) {
 	HH he = m.halfedge_handle(eh, 0);
-	Vec3d ev = makePeriod(m.point(m.to_vertex_handle(he)) - m.point(m.from_vertex_handle(he)),
-						  m.halfPeriod());
+	Vec3d ev = m.wrapVector(m.point(m.to_vertex_handle(he)) - m.point(m.from_vertex_handle(he)));
 	return ev.norm();
 }
 
 // Periodic edge midpoint (minsurf: eval_period_edge(he, 0.5))
 Vec3d periodMidpoint(const PeriodicTriMesh& m, HH he) {
 	const Vec3d& p0 = m.point(m.from_vertex_handle(he));
-	Vec3d ev = makePeriod(m.point(m.to_vertex_handle(he)) - p0, m.halfPeriod());
+	Vec3d ev = m.wrapVector(m.point(m.to_vertex_handle(he)) - p0);
 	return p0 + ev * 0.5;
 }
 
 // Periodic sector angle (minsurf: period_sector_angle)
 double periodSectorAngle(const PeriodicTriMesh& m, HH he) {
 	const Vec3d& a = m.point(m.from_vertex_handle(he));
-	const Vec3d hp = m.halfPeriod();
-	Vec3d ab = makePeriod(m.point(m.to_vertex_handle(he)) - a, hp);
-	Vec3d ac = makePeriod(m.point(m.to_vertex_handle(m.next_halfedge_handle(he))) - a, hp);
+	Vec3d ab = m.wrapVector(m.point(m.to_vertex_handle(he)) - a);
+	Vec3d ac = m.wrapVector(m.point(m.to_vertex_handle(m.next_halfedge_handle(he))) - a);
 	double la = ab.norm(), lb = ac.norm();
 	if (la < 1e-15 || lb < 1e-15)
 		return 0.0;
@@ -54,24 +52,22 @@ double periodFaceArea(const PeriodicTriMesh& m, FH fh) {
 	auto fv = m.cfv_iter(fh);
 	const Vec3d& p0 = m.point(*fv);
 	++fv;
-	const Vec3d hp = m.halfPeriod();
-	Vec3d e1 = makePeriod(m.point(*fv) - p0, hp);
+	Vec3d e1 = m.wrapVector(m.point(*fv) - p0);
 	++fv;
-	Vec3d e2 = makePeriod(m.point(*fv) - p0, hp);
+	Vec3d e2 = m.wrapVector(m.point(*fv) - p0);
 	return 0.5 * (e1 % e2).norm();
 }
 
 // Vertex normal
 Vec3d vertexNormal(const PeriodicTriMesh& m, VH vh) {
 	Vec3d n(0, 0, 0);
-	const Vec3d hp = m.halfPeriod();
 	for (auto voh = m.cvoh_iter(vh); voh.is_valid(); ++voh) {
 		if (m.is_boundary(*voh))
 			continue;
 		double angle = periodSectorAngle(m, *voh);
 		const Vec3d& p0 = m.point(m.from_vertex_handle(*voh));
-		Vec3d e1 = makePeriod(m.point(m.to_vertex_handle(*voh)) - p0, hp);
-		Vec3d e2 = makePeriod(m.point(m.to_vertex_handle(m.next_halfedge_handle(*voh))) - p0, hp);
+		Vec3d e1 = m.wrapVector(m.point(m.to_vertex_handle(*voh)) - p0);
+		Vec3d e2 = m.wrapVector(m.point(m.to_vertex_handle(m.next_halfedge_handle(*voh))) - p0);
 		Vec3d fn = e1 % e2;
 		double fnl = fn.norm();
 		if (fnl > 1e-15)
@@ -90,15 +86,14 @@ bool isDelaunay(const PeriodicTriMesh& m, EH eh) {
 		return true;
 	HH he0 = m.halfedge_handle(eh, 0);
 	HH he1 = m.halfedge_handle(eh, 1);
-	const Vec3d hp = m.halfPeriod();
 
 	// Diamond: edge = (v0, v1), opposite vertices = (v2, v3)
 	// v0 = from(he0), v1 = to(he0)
 	// v2 = to(next(he0)),  v3 = to(next(he1))
 	const Vec3d& p0 = m.point(m.from_vertex_handle(he0));
-	Vec3d p1 = p0 + makePeriod(m.point(m.to_vertex_handle(he0)) - p0, hp);
-	Vec3d p2 = p0 + makePeriod(m.point(m.to_vertex_handle(m.next_halfedge_handle(he0))) - p0, hp);
-	Vec3d p3 = p0 + makePeriod(m.point(m.to_vertex_handle(m.next_halfedge_handle(he1))) - p0, hp);
+	Vec3d p1 = p0 + m.wrapVector(m.point(m.to_vertex_handle(he0)) - p0);
+	Vec3d p2 = p0 + m.wrapVector(m.point(m.to_vertex_handle(m.next_halfedge_handle(he0))) - p0);
+	Vec3d p3 = p0 + m.wrapVector(m.point(m.to_vertex_handle(m.next_halfedge_handle(he1))) - p0);
 
 	// angle at v2 in triangle (v0, v1, v2)
 	Vec3d e20 = p0 - p2, e21 = p1 - p2;
@@ -132,22 +127,8 @@ Vec3d circumcenter(const Vec3d& p1, const Vec3d& p2, const Vec3d& p3) {
 	return p1 * (w0 / wsum) + p2 * (w1 / wsum) + p3 * (w2 / wsum);
 }
 
-// period_shift: wrap all vertices back into [0, 2*hp)
 void periodShift(PeriodicTriMesh& m) {
-	const Vec3d hp = m.halfPeriod();
-	for (auto v = m.vertices_begin(); v != m.vertices_end(); ++v) {
-		Vec3d p = m.point(*v);
-		for (int i = 0; i < 3; ++i) {
-			double period = 2.0 * static_cast<double>(hp[i]);
-			double pi = static_cast<double>(p[i]);
-			while (pi < -1e-5)
-				pi += period;
-			while (pi > period + 1e-5)
-				pi -= period;
-			p[i] = static_cast<DefaultTriMesh::Scalar>(pi);
-		}
-		m.set_point(*v, p);
-	}
+	m.periodShift();
 }
 
 // Collapse foldover check (minsurf: shouldCollapse)
@@ -155,7 +136,6 @@ void periodShift(PeriodicTriMesh& m) {
 bool shouldCollapse(const PeriodicTriMesh& m, HH he, const Vec3d& midpoint) {
 	VH vKeep = m.to_vertex_handle(he);
 	VH vRemove = m.from_vertex_handle(he);
-	const Vec3d hp = m.halfPeriod();
 
 	for (auto voh = m.cvoh_iter(vKeep); voh.is_valid(); ++voh) {
 		if (m.is_boundary(*voh))
@@ -165,9 +145,8 @@ bool shouldCollapse(const PeriodicTriMesh& m, HH he, const Vec3d& midpoint) {
 		if (va == vRemove || vb == vRemove)
 			continue;
 
-		// Wrap all points to the neighborhood of midpoint via make_period
-		Vec3d a = midpoint + makePeriod(m.point(va) - midpoint, hp);
-		Vec3d b = midpoint + makePeriod(m.point(vb) - midpoint, hp);
+		Vec3d a = midpoint + m.wrapVector(m.point(va) - midpoint);
+		Vec3d b = midpoint + m.wrapVector(m.point(vb) - midpoint);
 		Vec3d n = (a - midpoint) % (b - midpoint);
 		if (n.sqrnorm() < 1e-20)
 			return false; // degenerate -> do not collapse
@@ -191,7 +170,6 @@ double estimateAvgEdgeLength(const PeriodicTriMesh& m) {
 // epsilon must share that dimension: eps = (1/adaptiveEps) / minHalfPeriod.
 // L = flatLen * eps / (fabs(sqrt(averageK)) + eps)
 double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh, double flatLength, double epsilon) {
-	const Vec3d hp = m.halfPeriod();
 	HH he0 = m.halfedge_handle(eh, 0);
 	VH v[2] = {m.from_vertex_handle(he0), m.to_vertex_handle(he0)};
 
@@ -204,7 +182,7 @@ double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh, double flatLength, 
 		std::vector<Eigen::Vector3d> ring;
 		if (m.is_boundary(v[s])) {
 			for (auto voh = m.cvoh_iter(v[s]); voh.is_valid(); ++voh) {
-				Vec3d ev = makePeriod(m.point(m.to_vertex_handle(*voh)) - m.point(v[s]), hp);
+				Vec3d ev = m.wrapVector(m.point(m.to_vertex_handle(*voh)) - m.point(v[s]));
 				ring.push_back(center + Eigen::Vector3d(ev[0], ev[1], ev[2]));
 			}
 		} else {
@@ -214,7 +192,7 @@ double adaptiveTargetLength(const PeriodicTriMesh& m, EH eh, double flatLength, 
 			ring.reserve(static_cast<std::size_t>(valence));
 			const int maxSteps = 2 * valence + 100;
 			for (int step = 0; step < maxSteps; ++step) {
-				Vec3d ev = makePeriod(m.point(m.to_vertex_handle(he)) - m.point(v[s]), hp);
+				Vec3d ev = m.wrapVector(m.point(m.to_vertex_handle(he)) - m.point(v[s]));
 				ring.push_back(center + Eigen::Vector3d(ev[0], ev[1], ev[2]));
 				he = m.opposite_halfedge_handle(m.prev_halfedge_handle(he));
 				if (he == he_start)
@@ -271,9 +249,7 @@ bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 		minLen = flatLen / 4.0;
 
 	// Scale-normalize the dimensionless adaptiveEps so eps matches curvature (1/length).
-	const Vec3d hp = mesh.halfPeriod();
-	const double minHalfPeriod = std::min(
-		{static_cast<double>(hp[0]), static_cast<double>(hp[1]), static_cast<double>(hp[2])});
+	const double minHalfPeriod = 0.5 * mesh.minLatticeLength();
 	const double adaptEpsDimless = (opts.adaptiveEps > 0) ? (1.0 / opts.adaptiveEps) : 0.0;
 	const double adaptEps =
 		(adaptEpsDimless > 0.0 && minHalfPeriod > 1e-30) ? (adaptEpsDimless / minHalfPeriod) : 0.0;
@@ -350,7 +326,6 @@ bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 					VH vKeep = mesh.to_vertex_handle(he);
 					VH vRemove = mesh.from_vertex_handle(he);
 					double rmax = 0;
-					const Vec3d hp = mesh.halfPeriod();
 					const VH ends[2] = {vKeep, vRemove};
 					for (int s = 0; s < 2; ++s) {
 						const VH other = ends[1 - s];
@@ -358,7 +333,7 @@ bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 							VH nb = mesh.to_vertex_handle(*voh);
 							if (nb == other)
 								continue;
-							double d = makePeriod(mesh.point(nb) - mid, hp).norm();
+							double d = mesh.wrapVector(mesh.point(nb) - mid).norm();
 							rmax = std::max(rmax, d);
 						}
 					}
@@ -433,7 +408,6 @@ bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 			PeriodicTriMesh beforeSmooth = mesh;
 			const std::size_t nv = mesh.n_vertices();
 			std::vector<Vec3d> newPos(nv);
-			const Vec3d hp = mesh.halfPeriod();
 
 			for (auto vi = mesh.vertices_begin(); vi != mesh.vertices_end(); ++vi) {
 				VH vh = *vi;
@@ -453,11 +427,11 @@ bool delaunayRemesh(PeriodicTriMesh& mesh, const RemeshOptions& opts) {
 
 					// Unwrap the three face vertices to the neighborhood of pv
 					auto fvi = mesh.cfv_iter(fh);
-					Vec3d fp0 = pv + makePeriod(mesh.point(*fvi) - pv, hp);
+					Vec3d fp0 = pv + mesh.wrapVector(mesh.point(*fvi) - pv);
 					++fvi;
-					Vec3d fp1 = pv + makePeriod(mesh.point(*fvi) - pv, hp);
+					Vec3d fp1 = pv + mesh.wrapVector(mesh.point(*fvi) - pv);
 					++fvi;
-					Vec3d fp2 = pv + makePeriod(mesh.point(*fvi) - pv, hp);
+					Vec3d fp2 = pv + mesh.wrapVector(mesh.point(*fvi) - pv);
 
 					Vec3d center = mesh.is_boundary(fh) ? (fp0 + fp1 + fp2) * (1.0 / 3.0)
 														: circumcenter(fp0, fp1, fp2);

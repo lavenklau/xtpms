@@ -52,11 +52,10 @@ Vec3d toOM(const Eigen::Vector3d& v) {
 }
 
 Eigen::Vector3d periodicEdgeVec(const PeriodicTriMesh& mesh, VH v0, VH v1) {
-	return toEig(makePeriod(mesh.point(v1) - mesh.point(v0), mesh.halfPeriod()));
+	return toEig(mesh.wrapVector(mesh.point(v1) - mesh.point(v0)));
 }
 
 Eigen::Matrix3d getFacePeriodTri(const PeriodicTriMesh& mesh, FH fh) {
-	const Vec3d hp = mesh.halfPeriod();
 	auto fv = mesh.cfv_iter(fh);
 	VH v0 = *fv;
 	++fv;
@@ -64,8 +63,8 @@ Eigen::Matrix3d getFacePeriodTri(const PeriodicTriMesh& mesh, FH fh) {
 	++fv;
 	VH v2 = *fv;
 	Eigen::Vector3d p0 = toEig(mesh.point(v0));
-	Eigen::Vector3d p1 = p0 + toEig(makePeriod(mesh.point(v1) - mesh.point(v0), hp));
-	Eigen::Vector3d p2 = p0 + toEig(makePeriod(mesh.point(v2) - mesh.point(v0), hp));
+	Eigen::Vector3d p1 = p0 + toEig(mesh.wrapVector(mesh.point(v1) - mesh.point(v0)));
+	Eigen::Vector3d p2 = p0 + toEig(mesh.wrapVector(mesh.point(v2) - mesh.point(v0)));
 	Eigen::Matrix3d tri;
 	tri.col(0) = p0;
 	tri.col(1) = p1;
@@ -86,14 +85,14 @@ void getPeriodicRing(const PeriodicTriMesh& mesh,
 					 VH vh,
 					 Eigen::Vector3d& outCenter,
 					 std::vector<Eigen::Vector3d>& outRing) {
-	const Vec3d hp = mesh.halfPeriod();
 	outCenter = toEig(mesh.point(vh));
 	outRing.clear();
 
 	if (mesh.is_boundary(vh)) {
 		for (auto voh_it = mesh.cvoh_iter(vh); voh_it.is_valid(); ++voh_it) {
 			VH vn = mesh.to_vertex_handle(*voh_it);
-			outRing.push_back(outCenter + toEig(makePeriod(mesh.point(vn) - mesh.point(vh), hp)));
+			outRing.push_back(outCenter +
+							  toEig(mesh.wrapVector(mesh.point(vn) - mesh.point(vh))));
 		}
 		return;
 	}
@@ -111,7 +110,7 @@ void getPeriodicRing(const PeriodicTriMesh& mesh,
 	const int maxSteps = 2 * valence + 100;
 	for (int step = 0; step < maxSteps; ++step) {
 		VH vn = mesh.to_vertex_handle(he);
-		outRing.push_back(outCenter + toEig(makePeriod(mesh.point(vn) - mesh.point(vh), hp)));
+		outRing.push_back(outCenter + toEig(mesh.wrapVector(mesh.point(vn) - mesh.point(vh))));
 		he = mesh.opposite_halfedge_handle(mesh.prev_halfedge_handle(he));
 		if (he == he_start)
 			break;
@@ -231,7 +230,6 @@ VertexGeometry computeVertexGeometry(const PeriodicTriMesh& mesh) {
 	VertexGeometry g;
 	const std::size_t ne = mesh.n_edges();
 	const std::size_t nv = mesh.n_vertices();
-	const Vec3d hp = mesh.halfPeriod();
 
 	g.cotWeights.resize(ne);
 	g.edgeVectors.resize(ne);
@@ -239,8 +237,8 @@ VertexGeometry computeVertexGeometry(const PeriodicTriMesh& mesh) {
 		EH eh(static_cast<int>(eid));
 		g.cotWeights[eid] = computeCotWeight(mesh, eh);
 		HH he = mesh.halfedge_handle(eh, 0);
-		Vec3d ev = makePeriod(
-			mesh.point(mesh.to_vertex_handle(he)) - mesh.point(mesh.from_vertex_handle(he)), hp);
+		Vec3d ev = mesh.wrapVector(mesh.point(mesh.to_vertex_handle(he)) -
+								   mesh.point(mesh.from_vertex_handle(he)));
 		g.edgeVectors[eid] = toEig(ev);
 	}
 
@@ -290,7 +288,6 @@ std::vector<double> computeSingularityMeasure(const PeriodicTriMesh& mesh, int s
 
 double computeCotWeight(const PeriodicTriMesh& mesh, EH eh) {
 	double cot_sum = 0.0;
-	const Vec3d hp = mesh.halfPeriod();
 	for (int side = 0; side < 2; ++side) {
 		HH he = mesh.halfedge_handle(eh, side);
 		if (mesh.is_boundary(he))
@@ -299,8 +296,8 @@ double computeCotWeight(const PeriodicTriMesh& mesh, EH eh) {
 		VH vOpp = mesh.to_vertex_handle(heN);
 		VH v0 = mesh.from_vertex_handle(he);
 		VH v1 = mesh.to_vertex_handle(he);
-		Vec3d e0 = makePeriod(mesh.point(v0) - mesh.point(vOpp), hp);
-		Vec3d e1 = makePeriod(mesh.point(v1) - mesh.point(vOpp), hp);
+		Vec3d e0 = mesh.wrapVector(mesh.point(v0) - mesh.point(vOpp));
+		Vec3d e1 = mesh.wrapVector(mesh.point(v1) - mesh.point(vOpp));
 		Vec3d cross = e0 % e1;
 		double sinA = cross.norm();
 		double cosA = static_cast<double>(e0 | e1);

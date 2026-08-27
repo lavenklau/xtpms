@@ -17,6 +17,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <queue>
 #include <set>
@@ -291,32 +292,178 @@ double signedDistanceAt(const std::array<double, 3>& q,
 
 } // namespace
 
+namespace {
+
+using Vec3d = PeriodicTriMesh::Vec3d;
+
+inline Eigen::Vector3d toEigen3(const Vec3d& p) {
+	return Eigen::Vector3d(
+		static_cast<double>(p[0]), static_cast<double>(p[1]), static_cast<double>(p[2]));
+}
+
+inline Vec3d fromEigen3(const Eigen::Vector3d& e) {
+	return Vec3d(static_cast<DefaultTriMesh::Scalar>(e[0]),
+				 static_cast<DefaultTriMesh::Scalar>(e[1]),
+				 static_cast<DefaultTriMesh::Scalar>(e[2]));
+}
+
+bool matrixIsDiagonal(const Eigen::Matrix3d& A, double relTol = 1e-12) {
+	const double scale = std::max(A.cwiseAbs().maxCoeff(), 1.0);
+	const double tol = relTol * scale;
+	for (int i = 0; i < 3; ++i) {
+		for (int j = 0; j < 3; ++j) {
+			if (i != j && std::abs(A(i, j)) > tol)
+				return false;
+		}
+	}
+	return A(0, 0) > 0.0 && A(1, 1) > 0.0 && A(2, 2) > 0.0;
+}
+
+// Run AABB-style period ops in the unit cube via ξ = A^{-1}x, then map back.
+struct FracFrame {
+	explicit FracFrame(PeriodicTriMesh& mesh)
+		: mesh_(mesh), A_(mesh.lattice()), active_(!mesh.isOrthogonalLattice()) {
+		if (!active_)
+			return;
+		mesh_.transformVertices(mesh_.latticeInv());
+		mesh_.setHalfPeriod(Vec3d(0.5, 0.5, 0.5));
+	}
+
+	~FracFrame() {
+		if (!active_)
+			return;
+		mesh_.setLattice(A_);
+		mesh_.transformVertices(A_);
+	}
+
+	FracFrame(const FracFrame&) = delete;
+	FracFrame& operator=(const FracFrame&) = delete;
+	FracFrame(FracFrame&&) = delete;
+	FracFrame& operator=(FracFrame&&) = delete;
+
+private:
+	PeriodicTriMesh& mesh_;
+	Eigen::Matrix3d A_;
+	bool active_;
+};
+
+} // namespace
+
 PeriodicTriMesh::PeriodicTriMesh() {
-	halfPeriod_ = {1.0, 1.0, 1.0};
+	setHalfPeriod(Vec3d(1.0, 1.0, 1.0));
 }
 
 void PeriodicTriMesh::setHalfPeriod(const Vec3d& halfPeriod) {
-	halfPeriod_ = halfPeriod;
+	Eigen::Matrix3d A = Eigen::Matrix3d::Zero();
+	A(0, 0) = 2.0 * static_cast<double>(halfPeriod[0]);
+	A(1, 1) = 2.0 * static_cast<double>(halfPeriod[1]);
+	A(2, 2) = 2.0 * static_cast<double>(halfPeriod[2]);
+	setLattice(A);
 }
 
 PeriodicTriMesh::Vec3d PeriodicTriMesh::halfPeriod() const {
 	return halfPeriod_;
 }
 
-PeriodicTriMesh::Vec3d PeriodicTriMesh::wrapVector(const Vec3d& v) const {
-	Vec3d out = v;
-	for (int i = 0; i < 3; ++i) {
-		const double hp = halfPeriod_[i];
-		const double step = 2.0 * hp;
-		if (!(step > 0.0)) {
-			continue;
-		}
-
-		const double shifted = static_cast<double>(v[i]) + hp;
-		const double n = std::floor(shifted / step);
-		out[i] = v[i] - n * step;
+bool PeriodicTriMesh::makeLatticeRightHanded(Eigen::Matrix3d& A) {
+	const double det = A.determinant();
+	if (det < 0.0 && std::abs(det) > 1e-18) {
+		A.col(2) = -A.col(2);
+		return true;
 	}
-	return out;
+	return false;
+}
+
+void PeriodicTriMesh::setLattice(const Eigen::Matrix3d& A_in) {
+	Eigen::Matrix3d A = A_in;
+	const double det = A.determinant();
+	if (!(std::abs(det) > 1e-18)) {
+		throw std::invalid_argument("setLattice: period vectors must form a basis (det(A) != 0)");
+	}
+	makeLatticeRightHanded(A);
+	lattice_ = A;
+	latticeInv_ = A.inverse();
+	latticeOrthogonal_ = matrixIsDiagonal(A);
+	if (latticeOrthogonal_) {
+		halfPeriod_ = Vec3d(static_cast<DefaultTriMesh::Scalar>(0.5 * A(0, 0)),
+							static_cast<DefaultTriMesh::Scalar>(0.5 * A(1, 1)),
+							static_cast<DefaultTriMesh::Scalar>(0.5 * A(2, 2)));
+	} else {
+		halfPeriod_ = Vec3d(static_cast<DefaultTriMesh::Scalar>(0.5 * A.col(0).norm()),
+							static_cast<DefaultTriMesh::Scalar>(0.5 * A.col(1).norm()),
+							static_cast<DefaultTriMesh::Scalar>(0.5 * A.col(2).norm()));
+	}
+}
+
+const Eigen::Matrix3d& PeriodicTriMesh::lattice() const {
+	return lattice_;
+}
+
+const Eigen::Matrix3d& PeriodicTriMesh::latticeInv() const {
+	return latticeInv_;
+}
+
+bool PeriodicTriMesh::isOrthogonalLattice() const {
+	return latticeOrthogonal_;
+}
+
+double PeriodicTriMesh::latticeVolume() const {
+	return std::abs(lattice_.determinant());
+}
+
+double PeriodicTriMesh::minLatticeLength() const {
+	return std::min({lattice_.col(0).norm(), lattice_.col(1).norm(), lattice_.col(2).norm()});
+}
+
+void PeriodicTriMesh::transformVertices(const Eigen::Matrix3d& M) {
+	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
+		this->set_point(*v_it, fromEigen3(M * toEigen3(this->point(*v_it))));
+	}
+}
+
+PeriodicTriMesh::Vec3d PeriodicTriMesh::wrapVector(const Vec3d& v) const {
+	if (latticeOrthogonal_) {
+		Vec3d out = v;
+		for (int i = 0; i < 3; ++i) {
+			const double hp = static_cast<double>(halfPeriod_[i]);
+			const double step = 2.0 * hp;
+			if (!(step > 0.0))
+				continue;
+			const double shifted = static_cast<double>(v[i]) + hp;
+			const double n = std::floor(shifted / step);
+			out[i] = v[i] - static_cast<DefaultTriMesh::Scalar>(n * step);
+		}
+		return out;
+	}
+	Eigen::Vector3d xi = latticeInv_ * toEigen3(v);
+	for (int i = 0; i < 3; ++i)
+		xi[i] -= std::floor(xi[i] + 0.5);
+	return fromEigen3(lattice_ * xi);
+}
+
+PeriodicTriMesh::Vec3d PeriodicTriMesh::wrapPoint(const Vec3d& p) const {
+	// Fold into the closed cell, keeping both ξ=0 and ξ=1. Mapping 1→0 here would
+	// stack opposite-face vertices and break splitUnitCell / mergePeriodBoundary.
+	constexpr double kEps = 1e-5;
+	if (latticeOrthogonal_) {
+		Vec3d out = p;
+		for (int i = 0; i < 3; ++i) {
+			const double period = 2.0 * static_cast<double>(halfPeriod_[i]);
+			if (!(period > 0.0))
+				continue;
+			double pi = static_cast<double>(p[i]);
+			if (pi < -kEps || pi > period + kEps)
+				pi -= period * std::floor(pi / period);
+			out[i] = static_cast<DefaultTriMesh::Scalar>(pi);
+		}
+		return out;
+	}
+	Eigen::Vector3d xi = latticeInv_ * toEigen3(p);
+	for (int i = 0; i < 3; ++i) {
+		if (xi[i] < -kEps || xi[i] > 1.0 + kEps)
+			xi[i] -= std::floor(xi[i]);
+	}
+	return fromEigen3(lattice_ * xi);
 }
 
 PeriodicTriMesh::Vec3d PeriodicTriMesh::shift2origin(const Vec3d& p) const {
@@ -883,18 +1030,12 @@ static void weldAndRebuildMesh(PeriodicTriMesh& mesh,
 		}
 	}
 	mesh.garbage_collection();
-
-	int bndE2 = 0;
-	for (auto e_it = mesh.edges_begin(); e_it != mesh.edges_end(); ++e_it)
-		if (mesh.is_boundary(*e_it))
-			++bndE2;
-	std::cerr << "[merge] after weld: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
-			  << " bnd=" << bndE2 << "\n";
 }
 
 } // namespace
 
 void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
+	FracFrame frac(*this);
 	// OpenMesh requires status attributes to perform collapse/split/delete/garbage_collection
 	this->request_vertex_status();
 	this->request_edge_status();
@@ -916,6 +1057,28 @@ void PeriodicTriMesh::mergePeriodBoundary(const MergeBoundaryOptions& options) {
 	// domain: [0, Lx] x [0, Ly] x [0, Lz]
 	const double domMin[3] = {0.0, 0.0, 0.0};
 	const double domMax[3] = {Lx, Ly, Lz};
+
+	// Affine A^{-1} (and OBJ I/O) leave vertices ~1e-8 off the unit-cube faces; snap so
+	// opposite-period pairing still sees min/max sides.
+	{
+		const double snapTol = 1e-6;
+		for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
+			Vec3d p = this->point(*v_it);
+			bool changed = false;
+			for (int i = 0; i < 3; ++i) {
+				const double x = static_cast<double>(p[i]);
+				if (x - domMin[i] < snapTol) {
+					p[i] = static_cast<DefaultTriMesh::Scalar>(domMin[i]);
+					changed = true;
+				} else if (domMax[i] - x < snapTol) {
+					p[i] = static_cast<DefaultTriMesh::Scalar>(domMax[i]);
+					changed = true;
+				}
+			}
+			if (changed)
+				this->set_point(*v_it, p);
+		}
+	}
 
 	// Boundary tolerance: strict face snap so slightly-inset verts are not tagged as period faces
 	const double borderTol = 1e-5;
@@ -1203,10 +1366,7 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 	this->request_halfedge_status();
 	this->request_face_status();
 
-	const Vec3d hp = halfPeriod_;
-	const double fullPeriod[3] = {2.0 * static_cast<double>(hp[0]),
-								  2.0 * static_cast<double>(hp[1]),
-								  2.0 * static_cast<double>(hp[2])};
+	const Eigen::Matrix3d Ainv = latticeInv_;
 
 	// Find connected components
 	const std::size_t nvTotal = this->n_vertices();
@@ -1247,7 +1407,7 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 			std::queue<std::pair<int, double>> bfs;
 			bfs.push({seed.idx(), 0.0});
 			double maxDist = -1;
-			while (!bfs.empty() && maxDist < fullPeriod[axis]) {
+			while (!bfs.empty() && maxDist < 1.0) {
 				auto [vi, dist] = bfs.front();
 				bfs.pop();
 				if (dist - vdist[static_cast<std::size_t>(vi)] < -1e-6)
@@ -1258,7 +1418,7 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 					int nb = this->to_vertex_handle(*voh).idx();
 					Vec3d ev =
 						wrapVector(this->point(VertexHandle(nb)) - this->point(VertexHandle(vi)));
-					double nbDist = dist + static_cast<double>(ev[axis]);
+					const double nbDist = dist + (Ainv * toEigen3(ev))[axis];
 					if (nbDist > vdist[static_cast<std::size_t>(nb)]) {
 						bfs.push({nb, nbDist});
 						vdist[static_cast<std::size_t>(nb)] = nbDist;
@@ -1266,7 +1426,7 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 					}
 				}
 			}
-			if (maxDist >= fullPeriod[axis]) {
+			if (maxDist >= 1.0) {
 				shouldRemove[static_cast<std::size_t>(ci)] = false;
 				break;
 			}
@@ -1301,26 +1461,13 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 // ──────────────────────────────────────────────────────────────────────────
 
 void PeriodicTriMesh::periodShift() {
-	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
-		Vec3d p = this->point(*v_it);
-		for (int i = 0; i < 3; ++i) {
-			const double period = 2.0 * static_cast<double>(halfPeriod_[i]);
-			double pi = static_cast<double>(p[i]);
-			if (pi < -1e-5)
-				p[i] += static_cast<DefaultTriMesh::Scalar>(period);
-			else if (pi > period + 1e-5)
-				p[i] -= static_cast<DefaultTriMesh::Scalar>(period);
-		}
-		this->set_point(*v_it, p);
-	}
+	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it)
+		this->set_point(*v_it, wrapPoint(this->point(*v_it)));
 }
 
 bool PeriodicTriMesh::findExcessiveEuclideanEdge(double maxFracOfMinPeriod,
 												 ExcessiveEuclideanEdge* out) const {
-	const double L0 = 2.0 * static_cast<double>(halfPeriod_[0]);
-	const double L1 = 2.0 * static_cast<double>(halfPeriod_[1]);
-	const double L2 = 2.0 * static_cast<double>(halfPeriod_[2]);
-	const double minPeriod = std::min({L0, L1, L2});
+	const double minPeriod = minLatticeLength();
 	const double threshold = maxFracOfMinPeriod * minPeriod;
 	if (!(threshold > 0.0))
 		return false;
@@ -1379,6 +1526,7 @@ bool PeriodicTriMesh::validateEuclideanEdgesOrDump(PeriodicTriMesh& after,
 // ──────────────────────────────────────────────────────────────────────────
 
 void PeriodicTriMesh::splitUnitCell(bool doSplitEdges) {
+	FracFrame frac(*this);
 	this->request_vertex_status();
 	this->request_edge_status();
 	this->request_halfedge_status();
@@ -1591,6 +1739,7 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 													   bool splitEdges) const {
 	PeriodicTriMesh mesh = *this;
 	std::vector<double> curv = computeSingularityMeasure(mesh, surgeryType);
+	auto frac = std::make_unique<FracFrame>(mesh);
 
 	mesh.request_vertex_status();
 	mesh.request_edge_status();
@@ -1805,6 +1954,7 @@ bool PeriodicTriMesh::saveSplitUnitCellWithSingularity(const std::string& objPat
 		return false;
 	}
 
+	frac.reset();
 	if (!OpenMesh::IO::write_mesh(mesh, objPath)) {
 		std::cerr << "[saveSplitUnitCellWithSingularity] failed to write " << objPath << "\n";
 		return false;
@@ -2639,6 +2789,11 @@ void PeriodicTriMesh::periodizeFrom(const DefaultTriMesh& naiveMesh, PeriodizeOp
 	if (options.collapseShortBoundaryEdgesBelow > 0.0) {
 		mergePeriodEdges(options.collapseShortBoundaryEdgesBelow);
 	}
+
+	if (!(latticeVolume() > 1e-18)) {
+		throw std::invalid_argument("periodizeFrom: lattice vectors must form a basis");
+	}
+	FracFrame frac(*this);
 
 	for (int ax = 0; ax < 3; ++ax) {
 		if (!(static_cast<double>(halfPeriod_[ax]) > 0.0)) {

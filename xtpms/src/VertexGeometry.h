@@ -16,7 +16,8 @@ namespace xtpms {
 
 // ── Periodic coordinate utilities ──────────────────────────
 
-// Wrap a difference vector into [-halfPeriod, halfPeriod) per axis.
+// Wrap a difference vector into [-halfPeriod, halfPeriod) per axis (orthogonal lattice).
+// For a general lattice use PeriodicTriMesh::wrapVector.
 DefaultTriMesh::Point makePeriod(const DefaultTriMesh::Point& v, const DefaultTriMesh::Point& hp);
 
 // Convert between OpenMesh Vec3d and Eigen::Vector3d.

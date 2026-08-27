@@ -2,6 +2,8 @@
 
 #include "PeriodicMesh.h"
 
+#include <cmath>
+
 namespace xtpms {
 
 struct RemeshOptions {
@@ -24,11 +26,7 @@ struct RemeshOptions {
 
 // Generate recommended remesh parameters based on the period size
 inline RemeshOptions defaultRemeshOptions(const PeriodicTriMesh& mesh) {
-	// Use geometric mean of periods to avoid over-refinement on non-uniform periods
-	double hp0 = static_cast<double>(mesh.halfPeriod()[0]);
-	double hp1 = static_cast<double>(mesh.halfPeriod()[1]);
-	double hp2 = static_cast<double>(mesh.halfPeriod()[2]);
-	double meanPeriod = 2.0 * std::cbrt(hp0 * hp1 * hp2);
+	const double meanPeriod = std::cbrt(mesh.latticeVolume());
 	RemeshOptions opts;
 	opts.targetLength = meanPeriod * 0.1;
 	opts.minLength = opts.targetLength * 0.1;

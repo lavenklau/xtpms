@@ -48,6 +48,42 @@ static bool parseVec3(const std::string& s, Vec3d& out) {
 	return true;
 }
 
+static bool parseLattice(const std::string& s, Eigen::Matrix3d& A) {
+	double v[9] = {};
+	char sep[8] = {};
+	std::istringstream iss(s);
+	if (!(iss >> v[0] >> sep[0] >> v[1] >> sep[1] >> v[2] >> sep[2] >> v[3] >> sep[3] >> v[4] >>
+		  sep[4] >> v[5] >> sep[5] >> v[6] >> sep[6] >> v[7] >> sep[7] >> v[8])) {
+		std::cerr << "Error: invalid lattice '" << s
+				  << "' (expected ax,ay,az,bx,by,bz,cx,cy,cz)\n";
+		return false;
+	}
+	for (char c : sep) {
+		if (c != ',') {
+			std::cerr << "Error: invalid lattice '" << s
+					  << "' (expected ax,ay,az,bx,by,bz,cx,cy,cz)\n";
+			return false;
+		}
+	}
+	char extra = 0;
+	if (iss >> extra) {
+		std::cerr << "Error: invalid lattice '" << s
+				  << "' (expected ax,ay,az,bx,by,bz,cx,cy,cz)\n";
+		return false;
+	}
+	A.col(0) = Eigen::Vector3d(v[0], v[1], v[2]);
+	A.col(1) = Eigen::Vector3d(v[3], v[4], v[5]);
+	A.col(2) = Eigen::Vector3d(v[6], v[7], v[8]);
+	if (!(std::abs(A.determinant()) > 1e-18)) {
+		std::cerr << "Error: lattice vectors must form a basis (det != 0)\n";
+		return false;
+	}
+	if (xtpms::PeriodicTriMesh::makeLatticeRightHanded(A)) {
+		std::cerr << "Warning: lattice was left-handed (det<0); negated c so det(A)>0\n";
+	}
+	return true;
+}
+
 // CGAL isotropic remesh on OpenMesh (via conversion)
 static void
 cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeLength, int nIter = 3) {
@@ -111,29 +147,75 @@ cgalIsotropicRemesh(xtpms::DefaultTriMesh& omesh, double targetEdgeLength, int n
 // Load mesh and periodize.
 // hpStr: "" or "auto" → auto-detect from bbox
 //        "x,y,z"      → scale mesh bbox to match specified half-period
+// latticeStr: "ax,ay,az,bx,by,bz,cx,cy,cz" → parallelepiped cell (mutually exclusive with hpStr)
 static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 							 const std::string& inputFile,
-							 const std::string& hpStr) {
+							 const std::string& hpStr,
+							 const std::string& latticeStr = "") {
 	xtpms::DefaultTriMesh src;
 	if (!OpenMesh::IO::read_mesh(src, inputFile)) {
 		std::cerr << "Error: cannot read " << inputFile << "\n";
 		return false;
 	}
 
+	auto copySrc = [&](xtpms::PeriodicTriMesh& out) {
+		out.clear();
+		for (auto v = src.vertices_begin(); v != src.vertices_end(); ++v)
+			out.add_vertex(src.point(*v));
+		for (auto f = src.faces_begin(); f != src.faces_end(); ++f) {
+			auto fv = src.cfv_iter(*f);
+			int a = (*fv).idx();
+			++fv;
+			int b = (*fv).idx();
+			++fv;
+			int c = (*fv).idx();
+			out.add_face(xtpms::PeriodicTriMesh::VertexHandle(a),
+						 xtpms::PeriodicTriMesh::VertexHandle(b),
+						 xtpms::PeriodicTriMesh::VertexHandle(c));
+		}
+	};
+
+	const bool hasLattice = !latticeStr.empty();
+	const bool hasHp = !hpStr.empty() && hpStr != "auto";
+	if (hasLattice && hasHp) {
+		std::cerr << "Error: specify only one of --half-period and --lattice\n";
+		return false;
+	}
+
+	bool hasBnd = false;
+	for (auto e = src.edges_begin(); e != src.edges_end(); ++e)
+		if (src.is_boundary(*e)) {
+			hasBnd = true;
+			break;
+		}
+
+	if (hasLattice) {
+		Eigen::Matrix3d A;
+		if (!parseLattice(latticeStr, A))
+			return false;
+		copySrc(mesh);
+		mesh.setLattice(A);
+		std::cout << "Lattice A = [a b c]:\n" << A << "\n";
+		if (!hasBnd) {
+			std::cout << "Input is closed periodic mesh, skipping remesh/merge\n";
+			return true;
+		}
+		mesh.transformVertices(mesh.latticeInv());
+		mesh.setHalfPeriod(Vec3d(0.5, 0.5, 0.5));
+		mesh.mergePeriodBoundary();
+		mesh.setLattice(A);
+		mesh.transformVertices(A);
+		return true;
+	}
+
 	// Detect whether the input is already a closed periodic mesh (bnd=0)
 	{
-		bool hasBnd = false;
-		for (auto e = src.edges_begin(); e != src.edges_end(); ++e)
-			if (src.is_boundary(*e)) {
-				hasBnd = true;
-				break;
-			}
 		if (!hasBnd) {
 			// Already closed: read directly, skip remesh/merge/scale
 			// Periodic boundary vertices are already merged; bbox cannot infer the actual period,
-			// so --half-period must be specified
+			// so --half-period or --lattice must be specified
 			if (hpStr.empty() || hpStr == "auto") {
-				std::cerr << "Error: closed periodic mesh requires --half-period\n";
+				std::cerr << "Error: closed periodic mesh requires --half-period or --lattice\n";
 				return false;
 			}
 			Vec3d hp;
@@ -393,9 +475,10 @@ struct ExprObjective {
 int cmdPeriodize(const std::string& input,
 				 const std::string& output,
 				 const std::string& hpStr,
+				 const std::string& latticeStr,
 				 bool noSplit) {
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, hpStr))
+	if (!loadPeriodicMesh(mesh, input, hpStr, latticeStr))
 		return 1;
 	std::cout << "Periodized: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
 	saveMesh(mesh, output, noSplit);
@@ -407,9 +490,9 @@ int cmdPeriodize(const std::string& input,
 // Subcommand: compute
 // ──────────────────────────────────────────────────────────
 
-int cmdCompute(const std::string& input, const std::string& hpStr) {
+int cmdCompute(const std::string& input, const std::string& hpStr, const std::string& latticeStr) {
 	xtpms::PeriodicTriMesh mesh;
-	if (!loadPeriodicMesh(mesh, input, hpStr))
+	if (!loadPeriodicMesh(mesh, input, hpStr, latticeStr))
 		return 1;
 	auto geom = xtpms::computeVertexGeometry(mesh);
 	Eigen::MatrixX3d u;
@@ -672,12 +755,6 @@ static xtpms::PeriodicTriMesh periodizeMesh(const xtpms::DefaultTriMesh& src, co
 						  vh[static_cast<std::size_t>(b)]);
 	}
 
-	int bnd = 0;
-	for (auto e = mesh.edges_begin(); e != mesh.edges_end(); ++e)
-		if (mesh.is_boundary(*e))
-			++bnd;
-	std::cerr << "[merge] after weld: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
-			  << " bnd=" << bnd << "\n";
 	return mesh;
 }
 
@@ -761,15 +838,34 @@ getBuiltinLevelSet(const std::string& type, double Lx, double Ly, double Lz) {
 int cmdSample(const std::string& expression,
 			  const std::string& output,
 			  const std::string& hpStr,
+			  const std::string& latticeStr,
 			  int resolution,
 			  bool noSplit,
 			  bool randomMode,
 			  int kmax,
 			  double decay) {
+	Eigen::Matrix3d latticeA = Eigen::Matrix3d::Identity();
+	const bool useLattice = !latticeStr.empty();
 	Vec3d hp;
-	if (!parseVec3(hpStr, hp))
+	if (useLattice) {
+		if (!parseLattice(latticeStr, latticeA))
+			return 1;
+		// Sample in the unit cube ξ∈[0,1)^3, then map x = A ξ.
+		hp = Vec3d(0.5, 0.5, 0.5);
+		std::cout << "Sampling in fractional coordinates, lattice A =\n" << latticeA << "\n";
+	} else if (!parseVec3(hpStr, hp)) {
 		return 1;
+	}
 	double Lx = 2.0 * hp[0], Ly = 2.0 * hp[1], Lz = 2.0 * hp[2];
+
+	auto finishSample = [&](xtpms::PeriodicTriMesh& mesh) {
+		if (useLattice) {
+			mesh.setLattice(latticeA);
+			mesh.transformVertices(latticeA);
+		}
+		saveMesh(mesh, output, noSplit);
+		std::cout << "Saved: " << output << "\n";
+	};
 
 	std::function<double(double, double, double)> levelSet;
 
@@ -777,8 +873,7 @@ int cmdSample(const std::string& expression,
 		xtpms::PeriodicTriMesh mesh;
 		if (!makeRandomPeriodicMesh(mesh, hp, resolution, kmax, decay))
 			return 1;
-		saveMesh(mesh, output, noSplit);
-		std::cout << "Saved: " << output << "\n";
+		finishSample(mesh);
 		return 0;
 	}
 
@@ -833,8 +928,7 @@ int cmdSample(const std::string& expression,
 
 	auto mesh = periodizeMesh(src, hp);
 	std::cout << "Periodized: nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces() << "\n";
-	saveMesh(mesh, output, noSplit);
-	std::cout << "Saved: " << output << "\n";
+	finishSample(mesh);
 	return 0;
 }
 
@@ -847,6 +941,7 @@ int main(int argc, char** argv) {
 	app.require_subcommand(1);
 
 	std::string hpStr; // empty = auto-detect from bbox
+	std::string latticeStr;
 
 	// ── periodize ──
 	auto* cmdP = app.add_subcommand("periodize", "Merge periodic boundary of a mesh");
@@ -854,14 +949,20 @@ int main(int argc, char** argv) {
 	bool pz_nosplit = false;
 	cmdP->add_option("-i,--input", pz_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 	cmdP->add_option("-o,--output", pz_out, "Output OBJ")->required();
-	cmdP->add_option("--half-period", hpStr, "Half-period x,y,z");
+	cmdP->add_option("--half-period", hpStr, "Half-period x,y,z (orthogonal cell)");
+	cmdP->add_option("--lattice",
+					 latticeStr,
+					 "Period vectors ax,ay,az,bx,by,bz,cx,cy,cz (parallelepiped cell)");
 	cmdP->add_flag("--no-split", pz_nosplit, "Skip split (use raw saveUnitCell instead)");
 
 	// ── compute ──
 	auto* cmdC = app.add_subcommand("compute", "Compute effective conductivity tensor");
 	std::string cp_in;
 	cmdC->add_option("-i,--input", cp_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
-	cmdC->add_option("--half-period", hpStr, "Half-period x,y,z");
+	cmdC->add_option("--half-period", hpStr, "Half-period x,y,z (orthogonal cell)");
+	cmdC->add_option("--lattice",
+					 latticeStr,
+					 "Period vectors ax,ay,az,bx,by,bz,cx,cy,cz (parallelepiped cell)");
 
 	// ── optimize (also aliased as "generate") ──
 	auto* cmdO = app.add_subcommand("optimize", "Optimize surface conductivity");
@@ -889,7 +990,10 @@ int main(int argc, char** argv) {
 						o_dir,
 						"Output directory (final.obj, iter_*.obj, mean_curvature_*.txt, ...)")
 			->required();
-		cmd->add_option("--half-period", hpStr);
+		cmd->add_option("--half-period", hpStr, "Half-period x,y,z (orthogonal cell)");
+		cmd->add_option("--lattice",
+						latticeStr,
+						"Period vectors ax,ay,az,bx,by,bz,cx,cy,cz (parallelepiped cell)");
 		cmd->add_option("--max-iter", o_iter)->default_val(100);
 		cmd->add_option("--max-step", o_step)->default_val(10.0);
 		cmd->add_option("--mcf-weight", o_mcf)->default_val(0.1);
@@ -932,7 +1036,11 @@ int main(int argc, char** argv) {
 					 s_expr,
 					 "Level set expression (x,y,z,pi) or built-in: gyroid|schwarzp|diamond");
 	cmdS->add_option("-o,--output", s_out, "Output OBJ")->required();
-	cmdS->add_option("--half-period", s_hpStr, "Half-period x,y,z")->default_val("1,1,1");
+	cmdS->add_option("--half-period", s_hpStr, "Half-period x,y,z (orthogonal cell)")
+		->default_val("1,1,1");
+	cmdS->add_option("--lattice",
+					 latticeStr,
+					 "Period vectors ax,ay,az,bx,by,bz,cx,cy,cz; sample in [0,1)^3 then map x=Aξ");
 	cmdS->add_option("-r,--resolution", s_res)->default_val(20);
 	cmdS->add_flag("--random", s_random, "Random triperiodic function (ignore -e)");
 	cmdS->add_option("--kmax", s_kmax, "Max frequency index for --random")->default_val(2);
@@ -955,23 +1063,37 @@ int main(int argc, char** argv) {
 	CLI11_PARSE(app, argc, argv);
 
 	if (cmdP->parsed())
-		return cmdPeriodize(pz_in, pz_out, hpStr, pz_nosplit);
+		return cmdPeriodize(pz_in, pz_out, hpStr, latticeStr, pz_nosplit);
 	if (cmdC->parsed())
-		return cmdCompute(cp_in, hpStr);
+		return cmdCompute(cp_in, hpStr, latticeStr);
 	if (cmdO->parsed() || cmdG->parsed()) {
 		if (cmdG->parsed())
 			o_obj = "apac"; // generate always uses apac objective
 		xtpms::PeriodicTriMesh mesh;
 		if (o_in.empty()) {
-			Vec3d hp;
-			if (!parseVec3((hpStr.empty() || hpStr == "auto") ? std::string("1,1,1") : hpStr, hp))
-				return 1;
-			std::cout << "No seed mesh given; sampling random triperiodic surface "
-						 "(half-period "
-					  << hp[0] << "," << hp[1] << "," << hp[2] << ")\n";
-			if (!makeRandomPeriodicMesh(mesh, hp, o_seedRes, o_seedKmax, o_seedDecay))
-				return 1;
-		} else if (!loadPeriodicMesh(mesh, o_in, hpStr)) {
+			if (!latticeStr.empty()) {
+				Eigen::Matrix3d A;
+				if (!parseLattice(latticeStr, A))
+					return 1;
+				Vec3d hp(0.5, 0.5, 0.5);
+				std::cout << "No seed mesh given; sampling random triperiodic surface in "
+							 "fractional coordinates, then mapping by lattice\n";
+				if (!makeRandomPeriodicMesh(mesh, hp, o_seedRes, o_seedKmax, o_seedDecay))
+					return 1;
+				mesh.setLattice(A);
+				mesh.transformVertices(A);
+			} else {
+				Vec3d hp;
+				if (!parseVec3((hpStr.empty() || hpStr == "auto") ? std::string("1,1,1") : hpStr,
+							   hp))
+					return 1;
+				std::cout << "No seed mesh given; sampling random triperiodic surface "
+							 "(half-period "
+						  << hp[0] << "," << hp[1] << "," << hp[2] << ")\n";
+				if (!makeRandomPeriodicMesh(mesh, hp, o_seedRes, o_seedKmax, o_seedDecay))
+					return 1;
+			}
+		} else if (!loadPeriodicMesh(mesh, o_in, hpStr, latticeStr)) {
 			return 1;
 		}
 		return cmdOptimize(mesh,
@@ -993,7 +1115,8 @@ int main(int argc, char** argv) {
 						   o_logSurgery);
 	}
 	if (cmdS->parsed())
-		return cmdSample(s_expr, s_out, s_hpStr, s_res, s_nosplit, s_random, s_kmax, s_decay);
+		return cmdSample(
+			s_expr, s_out, s_hpStr, latticeStr, s_res, s_nosplit, s_random, s_kmax, s_decay);
 	if (cmdJ->parsed()) {
 		xtpms::DefaultTriMesh mesh;
 		if (!OpenMesh::IO::read_mesh(mesh, cj_in)) {

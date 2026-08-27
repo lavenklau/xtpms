@@ -396,9 +396,7 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 			remeshOpts.adaptiveEps = opts.remeshOpts.adaptiveEps;
 		remeshOpts.maxEuclideanEdgeFracOfMinPeriod = userFrac;
 		remeshOpts.failureDumpDir = userFailDir;
-		const auto hp = mesh.halfPeriod();
-		const double minHp = std::min(
-			{static_cast<double>(hp[0]), static_cast<double>(hp[1]), static_cast<double>(hp[2])});
+		const double minHp = 0.5 * mesh.minLatticeLength();
 		const double eps = (remeshOpts.adaptiveEps > 0 && minHp > 1e-30)
 							   ? (1.0 / remeshOpts.adaptiveEps / minHp)
 							   : 0.0;
@@ -691,16 +689,15 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 		double tbar = conv.estimateNextStep(opts.maxStep);
 		double step = tbar;
 		// maximal unflip step: per-face search, cos(60°) threshold
-		const Vec3d hp = mesh.halfPeriod();
 		const double cosThres = 0.5; // cos(60°)
 		for (auto fit = mesh.faces_begin(); fit != mesh.faces_end(); ++fit) {
 			double faceStep = step;
 			int fidx[3];
 			getFaceVertexIdx(mesh, *fit, fidx);
 			Eigen::Vector3d oldE1 =
-				toEig(makePeriod(mesh.point(VH(fidx[1])) - mesh.point(VH(fidx[0])), hp));
+				toEig(mesh.wrapVector(mesh.point(VH(fidx[1])) - mesh.point(VH(fidx[0]))));
 			Eigen::Vector3d oldE2 =
-				toEig(makePeriod(mesh.point(VH(fidx[2])) - mesh.point(VH(fidx[0])), hp));
+				toEig(mesh.wrapVector(mesh.point(VH(fidx[2])) - mesh.point(VH(fidx[0]))));
 			Eigen::Vector3d oldN = oldE1.cross(oldE2);
 			double oldLen = oldN.norm();
 			if (oldLen < 1e-20)
@@ -713,8 +710,8 @@ void tailorADC(PeriodicTriMesh& mesh, const TailorADCOptions& opts) {
 									  faceStep * stepVec[static_cast<std::size_t>(fidx[1])];
 				Eigen::Vector3d np2 = toEig(mesh.point(VH(fidx[2]))) +
 									  faceStep * stepVec[static_cast<std::size_t>(fidx[2])];
-				Eigen::Vector3d newE1 = toEig(makePeriod(toOM(np1) - toOM(np0), hp));
-				Eigen::Vector3d newE2 = toEig(makePeriod(toOM(np2) - toOM(np0), hp));
+				Eigen::Vector3d newE1 = toEig(mesh.wrapVector(toOM(np1) - toOM(np0)));
+				Eigen::Vector3d newE2 = toEig(mesh.wrapVector(toOM(np2) - toOM(np0)));
 				Eigen::Vector3d newN = newE1.cross(newE2);
 				double newLen = newN.norm();
 				if (newLen > 1e-20 && newN.dot(oldN) / newLen > cosThres) {

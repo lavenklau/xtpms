@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <OpenMesh/Core/IO/MeshIO.hh>
+#include <Eigen/Dense>
 
 #include "PeriodicMesh.h"
 #include "MarchingCubes.h"
@@ -196,6 +197,48 @@ xtpms::DefaultTriMesh makeOpenZQuad() {
 }
 
 } // namespace
+
+TEST(PeriodicMesh, OrthogonalWrapMatchesHalfPeriod) {
+	xtpms::PeriodicTriMesh mesh;
+	mesh.setHalfPeriod(Vec3d(1.0, 2.0, 3.0));
+	EXPECT_TRUE(mesh.isOrthogonalLattice());
+	const Vec3d v(2.3, -5.1, 7.0);
+	const Vec3d w = mesh.wrapVector(v);
+	EXPECT_GE(static_cast<double>(w[0]), -1.0);
+	EXPECT_LT(static_cast<double>(w[0]), 1.0);
+	EXPECT_GE(static_cast<double>(w[1]), -2.0);
+	EXPECT_LT(static_cast<double>(w[1]), 2.0);
+	EXPECT_NEAR(static_cast<double>(mesh.latticeVolume()), 48.0, 1e-12);
+}
+
+TEST(PeriodicMesh, SkewLatticeWrapUsesBasisCoords) {
+	xtpms::PeriodicTriMesh mesh;
+	Eigen::Matrix3d A;
+	A.col(0) = Eigen::Vector3d(2.0, 0.0, 0.0);
+	A.col(1) = Eigen::Vector3d(0.5, 2.0, 0.0);
+	A.col(2) = Eigen::Vector3d(0.0, 0.3, 2.0);
+	mesh.setLattice(A);
+	EXPECT_FALSE(mesh.isOrthogonalLattice());
+
+	// a+b is a lattice vector: wrap should be ~0
+	const Vec3d latticeVec(static_cast<xtpms::DefaultTriMesh::Scalar>(2.5),
+						   static_cast<xtpms::DefaultTriMesh::Scalar>(2.0),
+						   static_cast<xtpms::DefaultTriMesh::Scalar>(0.0));
+	const Vec3d w0 = mesh.wrapVector(latticeVec);
+	EXPECT_NEAR(static_cast<double>(w0.norm()), 0.0, 1e-10);
+
+	// 0.6 a is outside [-0.5,0.5) in the a-coordinate -> wraps by -a
+	const Vec3d v(static_cast<xtpms::DefaultTriMesh::Scalar>(1.2), 0.0, 0.0);
+	const Vec3d w = mesh.wrapVector(v);
+	EXPECT_NEAR(static_cast<double>(w[0]), -0.8, 1e-6);
+	EXPECT_NEAR(static_cast<double>(w[1]), 0.0, 1e-6);
+
+	const Vec3d p = mesh.wrapPoint(latticeVec);
+	// a+b sits on the ξ_a=ξ_b=1 face; wrapPoint keeps the max face (does not map 1→0).
+	EXPECT_NEAR(static_cast<double>(p[0]), 2.5, 1e-10);
+	EXPECT_NEAR(static_cast<double>(p[1]), 2.0, 1e-10);
+	EXPECT_NEAR(static_cast<double>(p[2]), 0.0, 1e-10);
+}
 
 TEST(PeriodicMeshPeriodize, UnitCube_MergeNonEmpty) {
 	const xtpms::DefaultTriMesh src = makeUnitCube();
@@ -601,6 +644,172 @@ xtpms::PeriodicTriMesh makeClosedGyroid(const Vec3d& hp, int res = 16) {
 
 xtpms::PeriodicTriMesh makeClosedSchwarzP(const Vec3d& hp, int res = 16) {
 	return makeClosedTPMS(hp, makeSchwarzPMC(hp, res));
+}
+
+static void writeParallelepipedWireframe(const Eigen::Matrix3d& A, const std::string& path) {
+	std::ofstream out(path);
+	ASSERT_TRUE(static_cast<bool>(out)) << "cannot write " << path;
+	out << "# parallelepiped cell edges for overlay\n";
+	const Eigen::Vector3d o = Eigen::Vector3d::Zero();
+	const Eigen::Vector3d a = A.col(0);
+	const Eigen::Vector3d b = A.col(1);
+	const Eigen::Vector3d c = A.col(2);
+	const Eigen::Vector3d corners[8] = {o, a, b, a + b, c, a + c, b + c, a + b + c};
+	for (const auto& p : corners)
+		out << "v " << p[0] << " " << p[1] << " " << p[2] << "\n";
+	const int edges[12][2] = {
+		{1, 2}, {1, 3}, {2, 4}, {3, 4}, {5, 6}, {5, 7}, {6, 8}, {7, 8}, {1, 5}, {2, 6}, {3, 7}, {4, 8}};
+	for (const auto& e : edges)
+		out << "l " << e[0] << " " << e[1] << "\n";
+}
+
+TEST(PeriodicMesh, SampleSkewGyroidWritesObj) {
+	// Same path as `xtpms sample -e gyroid --lattice ...`: MC + merge on the unit cube, then x=Aξ.
+	const Vec3d hp(0.5, 0.5, 0.5);
+	auto mesh = makeClosedGyroid(hp, 24);
+	ASSERT_EQ(countBoundaryEdges(mesh), 0);
+	ASSERT_GT(mesh.n_faces(), 0u);
+
+	Eigen::Matrix3d A;
+	A.col(0) = Eigen::Vector3d(2.0, 0.0, 0.0);
+	A.col(1) = Eigen::Vector3d(0.8, 1.6, 0.0);
+	A.col(2) = Eigen::Vector3d(0.3, 0.4, 1.8);
+	mesh.setLattice(A);
+	mesh.transformVertices(A);
+
+	EXPECT_FALSE(mesh.isOrthogonalLattice());
+	EXPECT_EQ(countBoundaryEdges(mesh), 0) << "affine map must keep the mesh closed";
+	EXPECT_NEAR(mesh.latticeVolume(), std::abs(A.determinant()), 1e-12);
+
+	const Vec3d wa = mesh.wrapVector(Vec3d(static_cast<xtpms::DefaultTriMesh::Scalar>(A(0, 0)),
+										   static_cast<xtpms::DefaultTriMesh::Scalar>(A(1, 0)),
+										   static_cast<xtpms::DefaultTriMesh::Scalar>(A(2, 0))));
+	EXPECT_NEAR(static_cast<double>(wa.norm()), 0.0, 1e-9);
+
+	const std::string splitPath = "skew_gyroid_split.obj";
+	const std::string fusedPath = "skew_gyroid_fused.obj";
+	const std::string cellPath = "skew_gyroid_cell.obj";
+	ASSERT_TRUE(mesh.saveUnitCell(splitPath, /*split=*/true));
+	ASSERT_TRUE(mesh.saveUnitCell(fusedPath, /*split=*/false));
+	writeParallelepipedWireframe(A, cellPath);
+
+	std::cout << "Wrote " << splitPath << " (split parallelepiped cell), " << fusedPath
+			  << " (fused), " << cellPath << " (cell wireframe overlay)\n"
+			  << "  nv=" << mesh.n_vertices() << " nf=" << mesh.n_faces()
+			  << " det(A)=" << A.determinant() << "\n";
+}
+
+static Eigen::Matrix3d sampleSkewLattice() {
+	Eigen::Matrix3d A;
+	A.col(0) = Eigen::Vector3d(2.0, 0.0, 0.0);
+	A.col(1) = Eigen::Vector3d(0.8, 1.6, 0.0);
+	A.col(2) = Eigen::Vector3d(0.3, 0.4, 1.8);
+	return A;
+}
+
+static xtpms::PeriodicTriMesh makeSkewClosedGyroid(int res = 16) {
+	auto mesh = makeClosedGyroid(Vec3d(0.5, 0.5, 0.5), res);
+	mesh.setLattice(sampleSkewLattice());
+	mesh.transformVertices(mesh.lattice());
+	return mesh;
+}
+
+// Same sequence as loadPeriodicMesh when --lattice is given and the OBJ has a boundary.
+static void mergeSkewSplitLikeCli(xtpms::PeriodicTriMesh& mesh, const Eigen::Matrix3d& A) {
+	mesh.setLattice(A);
+	mesh.transformVertices(mesh.latticeInv());
+	mesh.setHalfPeriod(Vec3d(0.5, 0.5, 0.5));
+	mesh.mergePeriodBoundary();
+	mesh.setLattice(A);
+	mesh.transformVertices(A);
+}
+
+TEST(PeriodicMesh, MergeSkewSplitUnitCell) {
+	const Vec3d hp(0.5, 0.5, 0.5);
+	const Eigen::Matrix3d A = sampleSkewLattice();
+
+	auto cube = makeClosedGyroid(hp, 24);
+	ASSERT_EQ(countBoundaryEdges(cube), 0);
+	cube.splitUnitCell();
+	ASSERT_GT(countBoundaryEdges(cube), 0);
+	cube.mergePeriodBoundary();
+	EXPECT_EQ(countBoundaryEdges(cube), 0) << "orthogonal split+merge control";
+
+	auto closed = makeClosedGyroid(hp, 24);
+	closed.setLattice(A);
+	closed.transformVertices(A);
+	ASSERT_EQ(countBoundaryEdges(closed), 0);
+
+	xtpms::PeriodicTriMesh split = closed;
+	split.splitUnitCell();
+	ASSERT_GT(countBoundaryEdges(split), 0) << "split unit cell should have boundary";
+
+	mergeSkewSplitLikeCli(split, A);
+	EXPECT_EQ(countBoundaryEdges(split), 0)
+		<< "merge after A^{-1} should close the skew split cell";
+	EXPECT_GT(split.n_faces(), 0u);
+	EXPECT_FALSE(split.isOrthogonalLattice());
+
+	const std::string splitPath = "skew_gyroid_split_roundtrip.obj";
+	ASSERT_TRUE(closed.saveUnitCell(splitPath, /*split=*/true));
+
+	xtpms::PeriodicTriMesh loaded;
+	ASSERT_TRUE(OpenMesh::IO::read_mesh(loaded, splitPath));
+	ASSERT_GT(countBoundaryEdges(loaded), 0);
+	mergeSkewSplitLikeCli(loaded, A);
+	EXPECT_EQ(countBoundaryEdges(loaded), 0) << "OBJ roundtrip + merge should stay closed";
+}
+
+TEST(PeriodicMesh, SetLatticeFlipsLeftHanded) {
+	Eigen::Matrix3d A = sampleSkewLattice();
+	ASSERT_GT(A.determinant(), 0.0);
+	A.col(2) = -A.col(2);
+	ASSERT_LT(A.determinant(), 0.0);
+
+	xtpms::PeriodicTriMesh mesh;
+	mesh.setLattice(A);
+	EXPECT_GT(mesh.lattice().determinant(), 0.0);
+	EXPECT_NEAR((mesh.lattice().col(0) - A.col(0)).norm(), 0.0, 1e-12);
+	EXPECT_NEAR((mesh.lattice().col(1) - A.col(1)).norm(), 0.0, 1e-12);
+	EXPECT_NEAR((mesh.lattice().col(2) + A.col(2)).norm(), 0.0, 1e-12);
+
+	Eigen::Matrix3d B = A;
+	EXPECT_TRUE(xtpms::PeriodicTriMesh::makeLatticeRightHanded(B));
+	EXPECT_FALSE(xtpms::PeriodicTriMesh::makeLatticeRightHanded(B));
+	EXPECT_GT(B.determinant(), 0.0);
+}
+
+TEST(DelaunayRemesh, SkewGyroidRemeshPreservesClosed) {
+	auto mesh = makeSkewClosedGyroid(16);
+	ASSERT_EQ(countBoundaryEdges(mesh), 0);
+	ASSERT_FALSE(mesh.isOrthogonalLattice());
+
+	xtpms::RemeshOptions opts;
+	opts.outerIter = 1;
+	opts.innerIter = 3;
+	ASSERT_TRUE(xtpms::delaunayRemesh(mesh, opts));
+	EXPECT_EQ(countBoundaryEdges(mesh), 0) << "skew remesh should keep a closed periodic mesh";
+	EXPECT_GT(mesh.n_faces(), 0u);
+	EXPECT_FALSE(mesh.isOrthogonalLattice());
+}
+
+TEST(PeriodicMeshPeriodize, SkewGyroidPeriodizeFromClosed) {
+	auto srcMesh = makeSkewClosedGyroid(12);
+	ASSERT_EQ(countBoundaryEdges(srcMesh), 0);
+	const Eigen::Matrix3d A = srcMesh.lattice();
+
+	xtpms::PeriodicTriMesh mesh;
+	mesh.setLattice(A);
+	xtpms::PeriodizeOptions popt;
+	popt.mcCellsPerAxis = 16;
+	popt.mcVoxelDilateLayers = 3;
+	mesh.periodizeFrom(srcMesh, popt);
+	ASSERT_GT(mesh.n_faces(), 0u);
+	EXPECT_FALSE(mesh.isOrthogonalLattice());
+
+	mesh.mergePeriodBoundary();
+	EXPECT_EQ(countBoundaryEdges(mesh), 0) << "skew periodizeFrom + merge should close";
+	EXPECT_GT(mesh.lattice().determinant(), 0.0);
 }
 
 TEST(DelaunayRemesh, GyroidRemeshPreservesClosed) {
@@ -2120,6 +2329,22 @@ TEST(Surgery, GyroidSurgerySmoke) {
 	EXPECT_EQ(countBoundaryEdges(mesh), 0);
 }
 
+TEST(Surgery, SkewGyroidSurgerySmoke) {
+	auto mesh = makeSkewClosedGyroid(16);
+	xtpms::RemeshOptions ropts;
+	ropts.outerIter = 1;
+	ropts.innerIter = 3;
+	ASSERT_TRUE(xtpms::delaunayRemesh(mesh, ropts));
+	ASSERT_EQ(countBoundaryEdges(mesh), 0);
+
+	xtpms::SurgeryOptions opts;
+	opts.singularityTol = 25.0;
+	mesh.surgery(opts);
+	EXPECT_EQ(countBoundaryEdges(mesh), 0) << "surgery on skew gyroid should leave a closed mesh";
+	EXPECT_GT(mesh.n_faces(), 0u);
+	EXPECT_FALSE(mesh.isOrthogonalLattice());
+}
+
 TEST(Surgery, NeckMesh_SurgeryAndFill) {
 	namespace fs = std::filesystem;
 	const fs::path meshPath(R"(tests/data/neck.obj)");
@@ -2538,6 +2763,27 @@ TEST(AsymptoticConductivity, GyroidSolveADC) {
 			EXPECT_NEAR(kA(i, j), kA(j, i), 1e-10) << "kA should be symmetric";
 		}
 	}
+}
+
+TEST(AsymptoticConductivity, SkewGyroidSolveADC) {
+	auto mesh = makeSkewClosedGyroid(16);
+	ASSERT_EQ(countBoundaryEdges(mesh), 0);
+	ASSERT_FALSE(mesh.isOrthogonalLattice());
+
+	auto geom = xtpms::computeVertexGeometry(mesh);
+	EXPECT_EQ(geom.cotWeights.size(), mesh.n_edges());
+	EXPECT_GT(geom.vertexAreas.sum(), 0.0);
+
+	Eigen::MatrixX3d ulist;
+	Eigen::Matrix3d kA = xtpms::solveAsymptoticConductivity(mesh, geom, ulist);
+	ASSERT_TRUE(kA.allFinite());
+	for (int i = 0; i < 3; ++i) {
+		for (int j = 0; j < i; ++j)
+			EXPECT_NEAR(kA(i, j), kA(j, i), 1e-8) << "kA should be symmetric";
+	}
+	Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(kA);
+	ASSERT_EQ(eig.info(), Eigen::Success);
+	EXPECT_GT(eig.eigenvalues().minCoeff(), 0.0) << "kA should be SPD on a closed TPMS";
 }
 
 TEST(AsymptoticConductivity, ObjectiveAPAC) {

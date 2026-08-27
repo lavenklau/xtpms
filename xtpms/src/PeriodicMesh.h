@@ -4,6 +4,8 @@
 // AABB narrow-band SDF + periodic symmetry + Marching Cubes.
 #include "MeshTypes.h"
 
+#include <Eigen/Dense>
+
 #include <array>
 #include <cmath>
 #include <string>
@@ -110,10 +112,30 @@ public:
 public:
 	PeriodicTriMesh();
 
+	/// Orthogonal convenience: sets lattice \(A=\mathrm{diag}(2h_x,2h_y,2h_z)\).
 	void setHalfPeriod(const Vec3d& halfPeriod);
+	/// Axis-aligned half-cell sizes \((L_x,L_y,L_z)/2\). Used as AABB extents for wrap / merge /
+	/// split / periodize on an orthogonal lattice (and as \((1/2,1/2,1/2)\) after a skew cell is
+	/// mapped to the unit cube). Not wrap extents for a general lattice; use lattice() / wrapVector().
 	Vec3d halfPeriod() const;
 
+	/// Columns of \(A\) are the three period vectors \(a,b,c\) of the parallelepiped cell.
+	/// Left-handed input (\(\det A<0\)) is corrected by negating \(c\).
+	void setLattice(const Eigen::Matrix3d& A);
+	/// If \(\det A<0\), negate column \(c\) so \(\{a,b,c\}\) is right-handed. Returns true if flipped.
+	static bool makeLatticeRightHanded(Eigen::Matrix3d& A);
+	const Eigen::Matrix3d& lattice() const;
+	const Eigen::Matrix3d& latticeInv() const;
+	bool isOrthogonalLattice() const;
+	double latticeVolume() const;
+	double minLatticeLength() const;
+
+	void transformVertices(const Eigen::Matrix3d& M);
+
+	/// Minimum-image wrap of a difference vector into the centered cell \(A[-1/2,1/2)^3\).
 	Vec3d wrapVector(const Vec3d& v) const;
+	/// Fold a point into the closed corner cell, keeping both \(\xi=0\) and \(\xi=1\).
+	Vec3d wrapPoint(const Vec3d& p) const;
 
 	Vec3d shift2origin(const Vec3d& p) const;
 
@@ -138,7 +160,7 @@ public:
 	// topologically non-periodic mesh into a truly periodic mesh.
 	void mergePeriodBoundary(const MergeBoundaryOptions& options = MergeBoundaryOptions{});
 
-	// Wrap vertices into the fundamental domain [0, 2*halfPeriod).
+	// Wrap vertices into the fundamental domain \(A[0,1)^3\) (orthogonal: \([0, 2\cdot\mathrm{hp})\)).
 	void periodShift();
 
 	// Detect and remove island connected components that do not span the full period.
@@ -178,7 +200,7 @@ public:
 	bool surgery(const SurgeryOptions& opts = SurgeryOptions{});
 
 	// After periodShift, edge length is the minimum-image (periodically wrapped) length.
-	// Edges longer than maxFracOfMinPeriod * min(2*hp_i) indicate a bad mesh operation.
+	// Edges longer than maxFracOfMinPeriod * min(|a|,|b|,|c|) indicate a bad mesh operation.
 	struct ExcessiveEuclideanEdge {
 		int edgeIdx{-1};
 		int v0{-1};
@@ -198,6 +220,9 @@ public:
 											 double maxFracOfMinPeriod = 0.3);
 
 private:
+	Eigen::Matrix3d lattice_{Eigen::Matrix3d::Identity()};
+	Eigen::Matrix3d latticeInv_{Eigen::Matrix3d::Identity()};
+	bool latticeOrthogonal_{true};
 	Vec3d halfPeriod_{};
 };
 

@@ -54,8 +54,7 @@ static bool parseLattice(const std::string& s, Eigen::Matrix3d& A) {
 	std::istringstream iss(s);
 	if (!(iss >> v[0] >> sep[0] >> v[1] >> sep[1] >> v[2] >> sep[2] >> v[3] >> sep[3] >> v[4] >>
 		  sep[4] >> v[5] >> sep[5] >> v[6] >> sep[6] >> v[7] >> sep[7] >> v[8])) {
-		std::cerr << "Error: invalid lattice '" << s
-				  << "' (expected ax,ay,az,bx,by,bz,cx,cy,cz)\n";
+		std::cerr << "Error: invalid lattice '" << s << "' (expected ax,ay,az,bx,by,bz,cx,cy,cz)\n";
 		return false;
 	}
 	for (char c : sep) {
@@ -67,8 +66,7 @@ static bool parseLattice(const std::string& s, Eigen::Matrix3d& A) {
 	}
 	char extra = 0;
 	if (iss >> extra) {
-		std::cerr << "Error: invalid lattice '" << s
-				  << "' (expected ax,ay,az,bx,by,bz,cx,cy,cz)\n";
+		std::cerr << "Error: invalid lattice '" << s << "' (expected ax,ay,az,bx,by,bz,cx,cy,cz)\n";
 		return false;
 	}
 	A.col(0) = Eigen::Vector3d(v[0], v[1], v[2]);
@@ -194,17 +192,81 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		if (!parseLattice(latticeStr, A))
 			return false;
 		copySrc(mesh);
-		mesh.setLattice(A);
 		std::cout << "Lattice A = [a b c]:\n" << A << "\n";
+
+		// Input is an orthorhombic (possibly closed) seed in an axis-aligned box
+		// [bmin,bmax]. Map it onto the skew parallelepiped cell via fractional
+		// coordinates: xi = (x - bmin)/span in [0,1)^3, then x = A*xi.
+		Vec3d bmin, bmax;
+		{
+			auto v0 = src.vertices_begin();
+			bmin = bmax = src.point(*v0);
+			for (auto v = v0; v != src.vertices_end(); ++v) {
+				const auto& p = src.point(*v);
+				for (int i = 0; i < 3; ++i) {
+					if (p[i] < bmin[i])
+						bmin[i] = p[i];
+					if (p[i] > bmax[i])
+						bmax[i] = p[i];
+				}
+			}
+		}
+		Vec3d span;
+		for (int i = 0; i < 3; ++i)
+			span[i] = bmax[i] - bmin[i];
+
+		auto toFractional = [&](xtpms::PeriodicTriMesh& m) {
+			for (auto v = m.vertices_begin(); v != m.vertices_end(); ++v) {
+				Vec3d p = m.point(*v);
+				for (int i = 0; i < 3; ++i) {
+					const double s = static_cast<double>(span[i]);
+					p[i] = (s > 1e-15)
+							   ? (static_cast<double>(p[i]) - static_cast<double>(bmin[i])) / s
+							   : 0.0;
+				}
+				m.set_point(*v, p);
+			}
+		};
+
 		if (!hasBnd) {
-			std::cout << "Input is closed periodic mesh, skipping remesh/merge\n";
+			// Already-closed periodic mesh: remap ortho -> skew in place. The
+			// already-merged opposite faces stay merged under the affine map.
+			toFractional(mesh);
+			mesh.transformVertices(A);
+			mesh.setLattice(A);
+			std::cout << "Input is closed periodic mesh; remapped to skew cell, skipping "
+						 "remesh/merge\n";
 			return true;
 		}
-		mesh.transformVertices(mesh.latticeInv());
+
+		// Open (boundary) seed: clamp to bbox, normalize to the unit cube, merge
+		// opposite faces there, then map back onto the skew cell.
+		{
+			const double tol = 1e-4 * std::min({static_cast<double>(span[0]),
+												static_cast<double>(span[1]),
+												static_cast<double>(span[2])});
+			for (auto v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
+				Vec3d p = mesh.point(*v);
+				bool changed = false;
+				for (int i = 0; i < 3; ++i) {
+					if (std::abs(static_cast<double>(p[i]) - static_cast<double>(bmin[i])) < tol) {
+						p[i] = bmin[i];
+						changed = true;
+					} else if (std::abs(static_cast<double>(p[i]) - static_cast<double>(bmax[i])) <
+							   tol) {
+						p[i] = bmax[i];
+						changed = true;
+					}
+				}
+				if (changed)
+					mesh.set_point(*v, p);
+			}
+		}
+		toFractional(mesh);
 		mesh.setHalfPeriod(Vec3d(0.5, 0.5, 0.5));
 		mesh.mergePeriodBoundary();
-		mesh.setLattice(A);
 		mesh.transformVertices(A);
+		mesh.setLattice(A);
 		return true;
 	}
 
@@ -950,9 +1012,8 @@ int main(int argc, char** argv) {
 	cmdP->add_option("-i,--input", pz_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 	cmdP->add_option("-o,--output", pz_out, "Output OBJ")->required();
 	cmdP->add_option("--half-period", hpStr, "Half-period x,y,z (orthogonal cell)");
-	cmdP->add_option("--lattice",
-					 latticeStr,
-					 "Period vectors ax,ay,az,bx,by,bz,cx,cy,cz (parallelepiped cell)");
+	cmdP->add_option(
+		"--lattice", latticeStr, "Period vectors ax,ay,az,bx,by,bz,cx,cy,cz (parallelepiped cell)");
 	cmdP->add_flag("--no-split", pz_nosplit, "Skip split (use raw saveUnitCell instead)");
 
 	// ── compute ──
@@ -960,9 +1021,8 @@ int main(int argc, char** argv) {
 	std::string cp_in;
 	cmdC->add_option("-i,--input", cp_in, "Input mesh (OBJ, STL, PLY, OFF)")->required();
 	cmdC->add_option("--half-period", hpStr, "Half-period x,y,z (orthogonal cell)");
-	cmdC->add_option("--lattice",
-					 latticeStr,
-					 "Period vectors ax,ay,az,bx,by,bz,cx,cy,cz (parallelepiped cell)");
+	cmdC->add_option(
+		"--lattice", latticeStr, "Period vectors ax,ay,az,bx,by,bz,cx,cy,cz (parallelepiped cell)");
 
 	// ── optimize (also aliased as "generate") ──
 	auto* cmdO = app.add_subcommand("optimize", "Optimize surface conductivity");
@@ -1015,8 +1075,8 @@ int main(int argc, char** argv) {
 						o_logH,
 						"Dump per-vertex mean curvature H every N iters after remesh (0=off)")
 			->default_val(0);
-		cmd->add_flag("--log-surgery", o_logSurgery,
-					  "Dump before-surgery mesh (befsur_*.obj) to output-dir");
+		cmd->add_flag(
+			"--log-surgery", o_logSurgery, "Dump before-surgery mesh (befsur_*.obj) to output-dir");
 	}
 	// Random-seed controls (used when generate omits -i)
 	cmdG->add_option("-r,--resolution", o_seedRes, "MC resolution for random seed")

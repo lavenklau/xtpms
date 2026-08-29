@@ -2779,6 +2779,22 @@ bool PeriodicTriMesh::surgery(const SurgeryOptions& opts) {
 	cullSmallIslands(*this, opts.islandCullRatio);
 
 	this->garbage_collection();
+	// Clean up isolated vertices left behind by face deletion. garbage_collection only
+	// recycles *deleted* elements — it does not drop valence-0 vertices, which then inflate
+	// n_vertices() and make the post-surgery χ = V−E+F print nonsense (e.g. χ=681 on a
+	// genus-4 surface, driven purely by ~687 stray vertices). Remove them so the χ logged
+	// right after surgery is meaningful.
+	{
+		this->request_vertex_status();
+		bool cleaned = false;
+		for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it)
+			if (this->valence(*v_it) == 0) {
+				this->delete_vertex(*v_it, false);
+				cleaned = true;
+			}
+		if (cleaned)
+			this->garbage_collection();
+	}
 	// Cleanup: patch vertex coordinates from CGAL hole filling are in unwrapped space (may exceed
 	// the domain), shift back to [0, 2*hp) to ensure correct behavior of subsequent
 	// classify/mergePeriodBoundary

@@ -435,10 +435,29 @@ PeriodicTriMesh::Vec3d PeriodicTriMesh::wrapVector(const Vec3d& v) const {
 		}
 		return out;
 	}
+	// Skew lattice: minimum-image = subtract the NEAREST lattice point, not a per-axis
+	// box wrap. Per-axis floor rounding is only nearest-lattice for an orthogonal basis;
+	// for a skew cell it can add a spurious ±1 to a short in-cell edge. That breaks the
+	// closed-loop cancellation removeNonPeriodicIslands relies on (sum of wrapped edges
+	// around a loop must be ~0) and sends its longest-path BFS into an infinite loop.
+	// Enumerate the 8 integer offsets around the floor corner and keep the one that
+	// minimizes the Euclidean image distance (exact nearest lattice point for any basis
+	// whose angles are not pathologically close to 180°).
 	Eigen::Vector3d xi = latticeInv_ * toEigen3(v);
-	for (int i = 0; i < 3; ++i)
-		xi[i] -= std::floor(xi[i] + 0.5);
-	return fromEigen3(lattice_ * xi);
+	const Eigen::Vector3d fl(std::floor(xi[0]), std::floor(xi[1]), std::floor(xi[2]));
+	Eigen::Vector3d best = xi;
+	double bestN2 = (lattice_ * xi).squaredNorm();
+	for (int d0 = 0; d0 <= 1; ++d0)
+		for (int d1 = 0; d1 <= 1; ++d1)
+			for (int d2 = 0; d2 <= 1; ++d2) {
+				Eigen::Vector3d w = xi - Eigen::Vector3d(fl[0] + d0, fl[1] + d1, fl[2] + d2);
+				const double n2 = (lattice_ * w).squaredNorm();
+				if (n2 < bestN2) {
+					bestN2 = n2;
+					best = w;
+				}
+			}
+	return fromEigen3(lattice_ * best);
 }
 
 PeriodicTriMesh::Vec3d PeriodicTriMesh::wrapPoint(const Vec3d& p) const {
@@ -1371,7 +1390,6 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 	// Find connected components
 	const std::size_t nvTotal = this->n_vertices();
 	std::vector<int> compId(nvTotal, -1);
-	std::vector<VertexHandle> compSeed;
 	int nComp = 0;
 	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
 		if (compId[static_cast<std::size_t>((*v_it).idx())] >= 0)
@@ -1390,43 +1408,36 @@ int PeriodicTriMesh::removeNonPeriodicIslands() {
 				}
 			}
 		}
-		compSeed.push_back(*v_it);
 		++nComp;
 	}
 
 	if (nComp <= 1)
 		return 0;
 
-	// For each connected component, check whether it spans at least one axis period
+	// For each connected component, check whether it spans at least one full period by
+	// measuring its fractional-coordinate bbox span. A spanning component has vertices
+	// covering an axis (~1.0 span in fractional space). Single O(nv) pass over the
+	// already-labelled components — the previous longest-path BFS could re-enqueue a
+	// vertex forever on a skew lattice (a ~1e-15 floating-point residue around each
+	// closed loop keeps `nbDist > vdist[nb]` true lap after lap), hanging the run at 100% CPU.
+	std::vector<Eigen::Vector3d> fmin(static_cast<std::size_t>(nComp),
+									  Eigen::Vector3d(1e30, 1e30, 1e30));
+	std::vector<Eigen::Vector3d> fmax(static_cast<std::size_t>(nComp),
+									  Eigen::Vector3d(-1e30, -1e30, -1e30));
+	for (auto v_it = this->vertices_begin(); v_it != this->vertices_end(); ++v_it) {
+		const int ci = compId[static_cast<std::size_t>((*v_it).idx())];
+		if (ci < 0)
+			continue;
+		const Eigen::Vector3d xi = Ainv * toEigen3(this->point(*v_it));
+		fmin[static_cast<std::size_t>(ci)] = fmin[static_cast<std::size_t>(ci)].cwiseMin(xi);
+		fmax[static_cast<std::size_t>(ci)] = fmax[static_cast<std::size_t>(ci)].cwiseMax(xi);
+	}
 	std::vector<bool> shouldRemove(static_cast<std::size_t>(nComp), true);
 	for (int ci = 0; ci < nComp; ++ci) {
-		VertexHandle seed = compSeed[static_cast<std::size_t>(ci)];
 		for (int axis = 0; axis < 3; ++axis) {
-			// BFS: accumulate periodically-wrapped coordinate differences along the axis
-			std::vector<double> vdist(nvTotal, 0.0);
-			std::queue<std::pair<int, double>> bfs;
-			bfs.push({seed.idx(), 0.0});
-			double maxDist = -1;
-			while (!bfs.empty() && maxDist < 1.0) {
-				auto [vi, dist] = bfs.front();
-				bfs.pop();
-				if (dist - vdist[static_cast<std::size_t>(vi)] < -1e-6)
-					continue;
-				vdist[static_cast<std::size_t>(vi)] = dist;
-				maxDist = std::max(maxDist, dist);
-				for (auto voh = this->cvoh_iter(VertexHandle(vi)); voh.is_valid(); ++voh) {
-					int nb = this->to_vertex_handle(*voh).idx();
-					Vec3d ev =
-						wrapVector(this->point(VertexHandle(nb)) - this->point(VertexHandle(vi)));
-					const double nbDist = dist + (Ainv * toEigen3(ev))[axis];
-					if (nbDist > vdist[static_cast<std::size_t>(nb)]) {
-						bfs.push({nb, nbDist});
-						vdist[static_cast<std::size_t>(nb)] = nbDist;
-						maxDist = std::max(maxDist, nbDist);
-					}
-				}
-			}
-			if (maxDist >= 1.0) {
+			if (fmax[static_cast<std::size_t>(ci)][axis] -
+					fmin[static_cast<std::size_t>(ci)][axis] >=
+				0.99) {
 				shouldRemove[static_cast<std::size_t>(ci)] = false;
 				break;
 			}
@@ -2201,7 +2212,6 @@ static int fillSurgeryHoles(PeriodicTriMesh& mesh, const std::string& postFillPr
 			seedVerts.insert(mesh.from_vertex_handle(he).idx());
 
 		int holeEdgeNum = static_cast<int>(loop.size());
-		(void)holeEdgeNum;
 
 		// 4-ring expansion
 		std::set<int> ringVerts = seedVerts;

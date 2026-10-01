@@ -229,8 +229,34 @@ static bool loadPeriodicMesh(xtpms::PeriodicTriMesh& mesh,
 		};
 
 		if (!hasBnd) {
-			// Already-closed periodic mesh: remap ortho -> skew in place. The
-			// already-merged opposite faces stay merged under the affine map.
+			// The mesh may already be expressed in the lattice frame: the final.obj of a
+			// previous --lattice run is written as x = A*xi with xi in [0,1)^3, and remapping
+			// it by bbox would shear it a second time.  The periodic identification still
+			// succeeds in that case, so the error is silent -- it only shows up as a wrong
+			// conductivity (measured: 0.422 instead of 0.594 on a 3-iteration run).  Detect it
+			// by mapping the vertices back with A^{-1}: an orthorhombic seed in its own
+			// axis-aligned box maps outside [0,1]^3, a lattice-frame mesh fills it exactly.
+			{
+				const Eigen::Matrix3d Ainv = A.inverse();
+				double xiLo = 1e300, xiHi = -1e300;
+				for (auto v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
+					const Vec3d p = mesh.point(*v);
+					const Eigen::Vector3d xi = Ainv * Eigen::Vector3d(p[0], p[1], p[2]);
+					for (int i = 0; i < 3; ++i) {
+						xiLo = std::min(xiLo, xi[i]);
+						xiHi = std::max(xiHi, xi[i]);
+					}
+				}
+				const double tol = 1e-3;
+				if (xiLo > -tol && xiHi < 1.0 + tol) {
+					mesh.setLattice(A);
+					std::cout << "Input already spans the lattice cell (xi in [0,1]^3): used as a "
+								 "periodic skew mesh, no remap\n";
+					return true;
+				}
+			}
+			// Orthorhombic seed (e.g. the [-1,1]^3 library samples): remap in place.
+			// Already-merged opposite faces stay merged under the affine map.
 			toFractional(mesh);
 			mesh.transformVertices(A);
 			mesh.setLattice(A);
